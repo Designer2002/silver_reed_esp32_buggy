@@ -17,7 +17,7 @@ pub fn start_engine() -> Arc<Mutex<KnitState>> {
     thread::spawn(move || {
 
         log("INFO", "ENGINE STARTED");
-
+        
         loop {
             if let Some(evt) = pop_event() {
 
