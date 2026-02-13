@@ -1,8 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::{LazyLock, Mutex};
-
-
-#[derive(Debug, Clone, Copy)] 
+#[derive(Debug, Clone, Copy)]
 pub struct LogEntry {
     pub timestamp: &'static str, // Ссылка на строку, живущую всю программу
     pub level: &'static str,
@@ -24,7 +22,8 @@ static LOGS: LazyLock<Mutex<VecDeque<LogEntry>>> =
     LazyLock::new(|| Mutex::new(VecDeque::with_capacity(300)));
 
 // --- Функция для добавления лога ---
-pub fn log(level: &'static str, msg: &'static str) { // <- Параметры теперь 'static str
+pub fn log(level: &'static str, msg: &'static str) {
+    // <- Параметры теперь 'static str
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let timestamp = format!("{}.{}", now.as_secs(), now.subsec_millis());

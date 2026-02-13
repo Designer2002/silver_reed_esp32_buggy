@@ -1,43 +1,100 @@
 use crate::event_bus::{pop_event, push_event, Event};
-use crate::pattern::PATTERN;
-use crate::knit_state::KnitState;
 use crate::logger::log;
+use crate::pattern::PATTERN;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
-pub fn start_engine() -> Arc<Mutex<KnitState>> {
+#[derive(Debug)]
+pub struct EngineState {
+    pub row: usize,
+    pub needle: i32,
+    pub dir_right: bool,
+    pub inside_pattern: bool,
+    pub active: bool,
+    pub width: usize,
+    pub height: usize,
+}
 
-    let state = Arc::new(Mutex::new(
-        KnitState::new(PATTERN.width, PATTERN.height)
-    ));
+impl EngineState {
+    pub fn new(width: usize, height: usize) -> Self {
+        Self {
+            row: 0,
+            needle: 0,
+            dir_right: true,
+            inside_pattern: false,
+            active: false,
+            width,
+            height,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.row = 0;
+        self.needle = 0;
+        self.active = true;
+    }
+}
+
+pub fn start_engine() -> Arc<Mutex<EngineState>> {
+    let state = Arc::new(Mutex::new(EngineState::new(PATTERN.width, PATTERN.height)));
 
     let engine_state = state.clone();
 
     thread::spawn(move || {
-
         log("INFO", "ENGINE STARTED");
-        
+
         loop {
             if let Some(evt) = pop_event() {
-
                 let mut s = engine_state.lock().unwrap();
 
                 match evt {
-
                     Event::StartKnit => {
                         s.reset();
-                        log("INFO","KNITTING STARTED");
+                        log("INFO", "KNIT START");
                     }
 
                     Event::StopKnit => {
-                        s.stop();
-                        log("INFO","KNITTING STOPPED");
+                        s.active = false;
+                        log("INFO", "KNIT STOP");
                     }
 
-                    Event::Ksl(v) => s.ksl_high = v,
-                    Event::Nd1(v) => s.nd1_high = v,
-                    Event::Hok(v) => s.dir_right_to_left = v,
+                    Event::Hok(v) => {
+                        s.dir_right = v;
+                    }
+
+                    Event::Ksl(v) => {
+                        if v && !s.inside_pattern {
+                            // вошли в диапазон
+                            s.inside_pattern = true;
+
+                            if s.dir_right {
+                                s.needle = -1;
+                            } else {
+                                s.needle = s.width as i32;
+                            }
+                        } else if !v && s.inside_pattern {
+                            // вышли из диапазона = новая строка
+                            s.inside_pattern = false;
+                            s.row += 1;
+                            let dynamic_message = format!("ROW {}", s.row);
+                            let static_message: &'static str =
+                                Box::leak(dynamic_message.into_boxed_str());
+                            log("DEBUG", static_message);
+
+                            if s.row >= s.height {
+                                s.active = false;
+                                log("INFO", "PATTERN DONE");
+                            }
+                        }
+                    }
+
+                    Event::Nd1(low) => {
+                        if low {
+                            if s.dir_right {
+                                s.needle = -1;
+                            }
+                        }
+                    }
 
                     Event::CCP => {
                         if s.active {
@@ -48,42 +105,38 @@ pub fn start_engine() -> Arc<Mutex<KnitState>> {
                     _ => {}
                 }
             }
-
-            thread::sleep(Duration::from_millis(1));
         }
     });
 
     state
 }
 
-fn process_ccp(state: &mut KnitState) {
-
-    if !state.ksl_high {
+fn process_ccp(s: &mut EngineState) {
+    if !s.inside_pattern {
         return;
     }
 
-    if state.row >= state.height {
-        state.active = false;
-        log("INFO","PATTERN DONE");
-        return;
-    }
-
-    let bit = if state.dir_right_to_left {
-        PATTERN.rows[state.row][state.width - 1 - state.col]
+    if s.dir_right {
+        s.needle += 1;
     } else {
-        PATTERN.rows[state.row][state.col]
+        s.needle -= 1;
+    }
+
+    let col = s.needle;
+
+    if col < 0 || col >= s.width as i32 {
+        return;
+    }
+
+    let col = col as usize;
+
+    let bit = if s.dir_right {
+        PATTERN.rows[s.row][col]
+    } else {
+        PATTERN.rows[s.row][s.width - 1 - col]
     };
 
     if bit {
         push_event(Event::DobFire);
-    }
-
-    state.col += 1;
-
-    if state.col >= state.width {
-        state.col = 0;
-        state.row += 1;
-
-        log("INFO",&format!("ROW {} DONE", state.row));
     }
 }
