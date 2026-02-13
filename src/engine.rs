@@ -1,7 +1,6 @@
-use crate::event_bus::{pop_event, push_event, Event};
+use crate::event_bus::{pop_event, Event};
 use crate::logger::log;
 use crate::pattern::PATTERN;
-use std::sync::{Arc, Mutex};
 use std::thread;
 
 #[derive(Debug)]
@@ -35,108 +34,120 @@ impl EngineState {
     }
 }
 
-pub fn start_engine() -> Arc<Mutex<EngineState>> {
-    let state = Arc::new(Mutex::new(EngineState::new(PATTERN.width, PATTERN.height)));
+pub fn start_engine() {
+    thread::spawn(|| {
 
-    let engine_state = state.clone();
+        log("INFO","KNIT realtime engine started");
 
-    thread::spawn(move || {
-        log("INFO", "ENGINE STARTED");
+        let mut direction_right = true;
+        let mut current_needle: i32 = 0;
+        let mut row: usize = 0;
+
+        let mut inside_pattern = false;
+        let mut knitting = false;
+
+        let mut prev_ccp = true;
+        let mut prev_nd1 = true;
+        let mut prev_ksl = true;
 
         loop {
-            if let Some(evt) = pop_event() {
-                let mut s = engine_state.lock().unwrap();
 
+            // читаем GPIO напрямую
+            let (ccp, hok, ksl, nd1) = match crate::gpio::read_inputs() {
+                Some(v) => v,
+                None => {
+                    thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+            };
+
+            direction_right = hok;
+
+            // --- CCP ---
+            if ccp != prev_ccp {
+                prev_ccp = ccp;
+
+                if ccp {
+                    if direction_right {
+                        current_needle += 1;
+                    } else {
+                        current_needle -= 1;
+                    }
+
+                    if knitting && inside_pattern {
+                        fire_if_needed(row, current_needle, direction_right);
+                    }
+                }
+            }
+
+            // --- KSL ---
+            if ksl != prev_ksl {
+                prev_ksl = ksl;
+                inside_pattern = ksl;
+
+                if inside_pattern {
+                    if direction_right {
+                        current_needle = -1;
+                    } else {
+                        current_needle = PATTERN.width as i32;
+                    }
+                } else {
+                    row += 1;
+                    log("ROW", Box::leak(format!("{}",row).into_boxed_str()));
+
+                    if row >= PATTERN.height {
+                        knitting = false;
+                        log("INFO","PATTERN DONE");
+                    }
+                }
+            }
+
+            // --- ND1 ---
+            if nd1 != prev_nd1 {
+                prev_nd1 = nd1;
+
+                if !nd1 {
+                    if direction_right {
+                        current_needle = -1;
+                    }
+                }
+            }
+
+            // --- events start/stop ---
+            if let Some(evt) = pop_event() {
                 match evt {
                     Event::StartKnit => {
-                        s.reset();
-                        log("INFO", "KNIT START");
+                        knitting = true;
+                        row = 0;
+                        log("INFO","KNIT START");
                     }
-
                     Event::StopKnit => {
-                        s.active = false;
-                        log("INFO", "KNIT STOP");
+                        knitting = false;
+                        log("INFO","KNIT STOP");
                     }
-
-                    Event::Hok(v) => {
-                        s.dir_right = v;
-                    }
-
-                    Event::Ksl(v) => {
-                        if v && !s.inside_pattern {
-                            // вошли в диапазон
-                            s.inside_pattern = true;
-
-                            if s.dir_right {
-                                s.needle = -1;
-                            } else {
-                                s.needle = s.width as i32;
-                            }
-                        } else if !v && s.inside_pattern {
-                            // вышли из диапазона = новая строка
-                            s.inside_pattern = false;
-                            s.row += 1;
-                            let dynamic_message = format!("ROW {}", s.row);
-                            let static_message: &'static str =
-                                Box::leak(dynamic_message.into_boxed_str());
-                            log("DEBUG", static_message);
-
-                            if s.row >= s.height {
-                                s.active = false;
-                                log("INFO", "PATTERN DONE");
-                            }
-                        }
-                    }
-
-                    Event::Nd1(low) => {
-                        if low {
-                            if s.dir_right {
-                                s.needle = -1;
-                            }
-                        }
-                    }
-
-                    Event::CCP => {
-                        if s.active {
-                            process_ccp(&mut s);
-                        }
-                    }
-
                     _ => {}
                 }
             }
+
+            esp_idf_hal::delay::Ets::delay_us(50);
         }
     });
-
-    state
 }
 
-fn process_ccp(s: &mut EngineState) {
-    if !s.inside_pattern {
+fn fire_if_needed(row: usize, needle: i32, dir_right: bool) {
+    if needle < 0 || needle >= PATTERN.width as i32 {
         return;
     }
 
-    if s.dir_right {
-        s.needle += 1;
+    let col = needle as usize;
+
+    let bit = if dir_right {
+        PATTERN.rows[row][col]
     } else {
-        s.needle -= 1;
-    }
-
-    let col = s.needle;
-
-    if col < 0 || col >= s.width as i32 {
-        return;
-    }
-
-    let col = col as usize;
-
-    let bit = if s.dir_right {
-        PATTERN.rows[s.row][col]
-    } else {
-        PATTERN.rows[s.row][s.width - 1 - col]
+        PATTERN.rows[row][PATTERN.width-1-col]
     };
 
     if bit {
-        push_event(Event::DobFire);
+        crate::gpio::dob_fire();
     }
 }
