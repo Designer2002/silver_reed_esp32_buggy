@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>⚙️ Логи | ESP32</title>
+   <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+<div id="logs-tab" class="tab-content">
+    <div class="card">
+        <h2>📝 Логи вязания</h2>
+
+        <div class="info-box">
+            <p>🔍 <strong>Важно:</strong></p>
+            <p>• Все события вязания записываются в реальном времени</p>
+            <p>• Логи обновляются автоматически каждые 2 секунды</p>
+        </div>
+
+        <!-- КОНТЕЙНЕР ДЛЯ ЛОГОВ - именно этот элемент будет обновляться JS из index.html -->
+        <div class="card" style="background: #f8f9fa; margin-top: 20px; height: 300px; overflow-y: auto; border-radius: 10px;">
+            <div id="logs-container" style="padding: 15px; height: 100%; font-family: 'Courier New', Courier, monospace; font-size: 0.9em;"></div>
+        </div>
+
+        <!-- УДАЛЕНА КНОПКА "ОБНОВИТЬ ЛОГИ" -->
+    </div>
+</div>
+  </body>
+</html>

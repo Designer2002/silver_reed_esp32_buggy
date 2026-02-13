@@ -1,0 +1,432 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+    color: #333;
+    padding: 10px; /* Уменьшаем отступы */
+    min-height: 100vh;
+}
+
+.container {
+    max-width: 100%; /* Растягиваем на всю ширину */
+    margin: 0 auto;
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(10px);
+    border-radius: 15px; /* Slightly smaller radius */
+    padding: 15px; /* Уменьшаем внутренние отступы */
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1); /* Softer shadow */
+}
+
+h1 {
+    text-align: center;
+    margin-bottom: 20px; /* Уменьшаем отступ */
+    font-size: 1.8em; /* Уменьшаем размер шрифта */
+    color: #e77e6d;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.card {
+    background: white;
+    border-radius: 12px; /* Slightly smaller */
+    padding: 15px; /* Уменьшаем внутренние отступы */
+    margin-bottom: 15px; /* Уменьшаем отступ между карточками */
+    border: 1px solid #f0f0f0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05); /* Softer shadow */
+}
+
+.card h2 {
+    margin-bottom: 15px; /* Уменьшаем отступ */
+    color: #e77e6d;
+    font-size: 1.4em; /* Уменьшаем размер */
+    display: flex;
+    align-items: center;
+    gap: 8px; /* Уменьшаем отступ между иконкой и текстом */
+}
+
+.control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 12px; /* Уменьшаем отступы между элементами */
+}
+
+label {
+    font-weight: bold;
+    margin-bottom: 5px; /* Уменьшаем отступ */
+    color: #555;
+    font-size: 1em; /* Уменьшаем размер */
+}
+
+.btn {
+    background: linear-gradient(45deg, #ff9a9e, #fad0c4);
+    color: #333;
+    border: none;
+    padding: 12px 15px; /* Уменьшаем отступы */
+    border-radius: 8px; /* Slightly smaller */
+    font-size: 1em; /* Уменьшаем размер шрифта */
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.3s;
+    box-shadow: 0 3px 10px rgba(255, 154, 158, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px; /* Уменьшаем отступ между иконкой и текстом */
+}
+
+.btn:hover {
+    transform: translateY(-2px); /* Меньше подъём */
+    box-shadow: 0 4px 12px rgba(255, 154, 158, 0.6);
+}
+
+.btn:active {
+    transform: translateY(0);
+}
+
+.btn-success {
+    background: linear-gradient(45deg, #a1c4fd, #c2e9fb);
+}
+
+.btn-warning {
+    background: linear-gradient(45deg, #ff9a9e, #fad0c4);
+}
+
+.status-indicator {
+    display: inline-block;
+    width: 16px; /* Уменьшаем размер */
+    height: 16px; /* Уменьшаем размер */
+    border-radius: 50%;
+    margin-right: 8px; /* Уменьшаем отступ */
+}
+
+.status-active {
+    background: #00ff00;
+    box-shadow: 0 0 8px #00ff00;
+}
+
+.status-inactive {
+    background: #ff6b6b;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr); /* Две колонки на мобильном */
+    gap: 10px; /* Уменьшаем отступ */
+    margin-top: 15px;
+}
+
+.stat-item {
+    background: #f8f9fa;
+    padding: 12px; /* Уменьшаем отступ */
+    border-radius: 8px; /* Slightly smaller */
+    text-align: center;
+    border-left: 3px solid #e77e6d; /* Thinner border */
+}
+
+.stat-value {
+    font-size: 1.8em; /* Уменьшаем размер */
+    font-weight: bold;
+    color: #e77e6d;
+    margin: 5px 0; /* Уменьшаем отступ */
+}
+
+.stat-label {
+    font-size: 0.9em; /* Уменьшаем размер */
+    color: #666;
+}
+
+.info-box {
+    background: #fff9e6;
+    border-left: 3px solid #ffcc00; /* Thinner border */
+    padding: 12px; /* Уменьшаем отступ */
+    border-radius: 8px; /* Slightly smaller */
+    margin-top: 15px;
+    font-size: 0.95em; /* Уменьшаем размер */
+}
+
+.footer {
+    text-align: center;
+    margin-top: 20px;
+    color: #888;
+    font-size: 0.8em; /* Уменьшаем размер */
+}
+
+.signal-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr); /* Две колонки на мобильном */
+    gap: 10px; /* Уменьшаем отступ */
+    margin-top: 15px;
+}
+
+.signal {
+    background: #f8f9fa;
+    border-radius: 8px; /* Slightly smaller */
+    padding: 10px; /* Уменьшаем отступ */
+    text-align: center;
+    border: 1px solid #eee;
+}
+
+.signal-name {
+    font-weight: bold;
+    margin-bottom: 5px; /* Уменьшаем отступ */
+    color: #555;
+    font-size: 1em; /* Уменьшаем размер */
+}
+
+.signal-value {
+    font-size: 1.4em; /* Уменьшаем размер */
+    font-weight: bold;
+    color: #e77e6d;
+}
+
+.progress-container {
+    background: #f0f0f0;
+    border-radius: 8px; /* Slightly smaller */
+    overflow: hidden;
+    height: 20px; /* Уменьшаем высоту */
+    margin: 15px 0; /* Уменьшаем отступ */
+}
+
+.progress-bar {
+    height: 100%;
+    background: linear-gradient(45deg, #ff9a9e, #fad0c4);
+    width: 0%;
+    transition: width 0.5s ease;
+}
+
+/* --- БЛОК ДЛЯ ПАТТЕРНА --- */
+.pattern-container {
+    overflow-x: auto; /* Горизонтальная прокрутка */
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch; /* Плавная прокрутка на iOS */
+    margin: 15px 0;
+    border-radius: 8px;
+    background: #f8f9fa; /* Легкий фон контейнера */
+    padding: 5px;
+}
+
+.pattern-grid {
+    display: grid;
+    /* Основные стили для мобильных: 50 столбцов по 16px = 800px */
+    grid-template-columns: repeat(50, 16px);
+    gap: 1px;
+    min-width: 800px; /* Критически важно для прокрутки */
+    background: #f0f0f0;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 4px;
+}
+
+.pattern-cell {
+    width: 100%;
+    padding-bottom: 100%; /* Квадратная ячейка */
+    background: #f0f0f0;
+    border: 1px solid #ddd;
+    position: relative;
+}
+
+.pattern-cell.active {
+    background: #ff9a9e;
+}
+
+.pattern-cell::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 50%;
+    height: 50%;
+    border-radius: 50%;
+}
+
+.pattern-cell.active::after {
+    background: #e77e6d;
+}
+
+/* --- Конец блока для паттерна --- */
+
+.btn-group {
+    display: flex;
+    flex-direction: column; /* Вертикальная ориентация на мобильном */
+    gap: 10px; /* Уменьшаем отступ */
+    margin-top: 15px;
+}
+
+.btn-group .btn {
+    width: 100%; /* Занимает всю ширину */
+}
+
+.nav-tabs {
+    display: flex;
+    gap: 5px; /* Уменьшаем отступ */
+    margin-bottom: 15px;
+    overflow-x: auto; /* Добавляем прокрутку при необходимости */
+    white-space: nowrap; /* Не переносим на новую строку */
+}
+
+.nav-tab {
+    padding: 8px 12px; /* Уменьшаем отступ */
+    background: #f8f9fa;
+    border-radius: 6px 6px 0 0; /* Slightly smaller */
+    cursor: pointer;
+    font-size: 0.9em; /* Уменьшаем размер */
+    transition: all 0.2s;
+    border: 1px solid #eee;
+    flex-shrink: 0; /* Не сжимаем элементы */
+}
+
+.nav-tab.active {
+    background: #e77e6d;
+    color: white;
+    border-color: #e77e6d;
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+.log-container {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 12px;
+    height: 200px; /* Уменьшаем высоту на мобильном */
+    overflow-y: auto;
+    /* Добавляем моноширинный шрифт */
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.9em; /* Можно оставить или изменить под моноширинный шрифт */
+    line-height: 1.4;
+    border: 1px solid #eee;
+    /* Убираем font-family: monospace; из .log-entry, если он был */
+}
+
+.log-message
+{
+    font-family: 'Courier New', Courier, monospace;
+}
+
+.log-entry {
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px dashed #ddd;
+}
+
+.log-timestamp {
+    color: #e77e6d;
+    font-weight: bold;
+    margin-right: 8px;
+}
+
+.log-level {
+    display: inline-block;
+    padding: 2px 5px;
+    border-radius: 3px;
+    margin-right: 8px;
+    font-weight: bold;
+    font-size: 0.85em; /* Уменьшаем размер */
+}
+
+.log-level-info {
+    background: #d4edda;
+    color: #155724;
+}
+
+.log-level-warning {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.log-level-error {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+/* Select styles */
+select, input {
+    padding: 8px 10px; /* Уменьшаем отступ */
+    border: none;
+    border-radius: 6px; /* Slightly smaller */
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+    font-size: 0.95em; /* Уменьшаем размер */
+    width: 100%; /* Занимает всю ширину */
+}
+
+select option {
+    background: #e77e6d; /* Цвет фона опций */
+    color: white;
+}
+
+/* Для экранов шириной более 768px (планшеты и десктоп) */
+@media (min-width: 768px) {
+    body {
+        padding: 20px;
+    }
+
+    .container {
+        max-width: 1000px;
+        padding: 30px;
+    }
+
+    h1 {
+        font-size: 2.5em;
+        margin-bottom: 30px;
+    }
+
+    .card {
+        padding: 25px;
+        margin-bottom: 25px;
+    }
+
+    .stats-grid {
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 20px;
+    }
+
+    .stat-value {
+        font-size: 2.5em;
+    }
+
+    .stat-label {
+        font-size: 1.1em;
+    }
+
+    .signal-grid {
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+    }
+
+    /* Изменяем паттерн для десктопа */
+    .pattern-grid {
+        grid-template-columns: repeat(50, 20px); /* 20px ячейки */
+        min-width: 1000px; /* 50 * 20 = 1000px */
+        /* gap: 2px; Можно чуть увеличить */
+    }
+
+    .btn {
+        padding: 15px 25px;
+        font-size: 1.2em;
+    }
+
+    .nav-tabs {
+        gap: 10px;
+        margin-bottom: 25px;
+    }
+
+    .nav-tab {
+        padding: 12px 20px;
+        font-size: 1.1em;
+    }
+
+    .log-container {
+        height: 300px; /* Высота для десктопа */
+    }
+}

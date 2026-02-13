@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>🌸 Вязальная машина ESP32 🌸</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>🌸 Вязальная машина Silver Reed + ESP32 🌸</h1>
+
+      <div class="nav-tabs">
+        <div class="nav-tab active" onclick="switchTab('main')">
+          🦾 Основное
+        </div>
+        <div class="nav-tab" onclick="switchTab('pattern')">🌀 Паттерн</div>
+        <div class="nav-tab" onclick="switchTab('logs')">⚙️ Логи</div>
+      </div>
+
+      <!-- Основная вкладка -->
+      <div id="main-tab" class="tab-content active">
+        <div class="card">
+          <h2>📊 Статус вязания</h2>
+
+          <div class="signal-grid">
+            <div class="signal">
+              <div class="signal-name">CCP</div>
+              <div class="signal-value" id="ccp-value">Нет</div>
+            </div>
+            <div class="signal">
+              <div class="signal-name">HOK</div>
+              <div class="signal-value" id="hok-value">Нет</div>
+            </div>
+            <div class="signal">
+              <div class="signal-name">KSL</div>
+              <div class="signal-value" id="ksl-value">Нет</div>
+            </div>
+            <div class="signal">
+              <div class="signal-name">ND1</div>
+              <div class="signal-value" id="nd1-value">Нет</div>
+            </div>
+            <div class="signal">
+              <div class="signal-name">DOB</div>
+              <div class="signal-value" id="dob-value">Нет</div>
+            </div>
+          </div>
+
+          <div class="progress-container">
+            <div class="progress-bar" id="progress-bar"></div>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-item">
+              <div class="stat-value" id="current-row">0</div>
+              <div class="stat-label">Текущая строка</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="current-column">0</div>
+              <div class="stat-label">Текущий столбец</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="total-rows">0</div>
+              <div class="stat-label">Всего строк</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="total-columns">0</div>
+              <div class="stat-label">Всего столбцов</div>
+            </div>
+          </div>
+
+          <div class="info-box">
+            <p>💡 <strong>Инструкция:</strong></p>
+            <p>
+              1. Подключите все пины согласно схеме: CCP, HOK, KSL, ND1, DOB
+            </p>
+            <p>2. Нажмите "Запустить вязание" для начала процесса</p>
+            <p>3. Следите за прогрессом и состоянием сигналов</p>
+          </div>
+
+          <div class="btn-group">
+            <button
+              class="btn btn-success"
+              id="control-btn"
+              onclick="toggleKnitting()"
+            >
+              ▶️ Запустить вязание
+            </button>
+            <button
+              class="btn btn-success"
+              id="test-log-btn"
+              onclick="testLog()"
+            >
+              ᶠᶸᶜᵏᵧₒᵤ! Отправить ебаный лог
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Паттерн вкладка -->
+      <div id="pattern-tab" class="tab-content">
+        <div class="card">
+          <h2>🧶 Паттерн вязания</h2>
+
+          <div class="info-box">
+            <p>📝 <strong>Правила:</strong></p>
+            <p>
+              • <span style="color: #ff9a9e; font-weight: bold">#</span> =
+              активировать соленоид (1)
+            </p>
+            <p>
+              • <span style="color: #ddd; font-weight: bold">.</span> = не
+              активировать соленоид (0)
+            </p>
+          </div>
+
+          <div class="pattern-container">
+            <div class="pattern-grid" id="pattern-grid"></div>
+          </div>
+
+          <div class="btn-group">
+            <button class="btn btn-success" onclick="toggleKnitting()">
+              ▶️ Запустить вязание
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Логи вкладка -->
+              <!-- Логи вкладка -->
+        <div id="logs-tab" class="tab-content">
+            <div class="card">
+                <h2>📝 Логи вязания</h2>
+
+                <div class="info-box">
+                    <p>🔍 <strong>Важно:</strong></p>
+                    <p>• Все события вязания записываются в реальном времени</p>
+                    <p>• Логи обновляются автоматически</p>
+                </div>
+
+                <div class="card" style="background: #f8f9fa; margin-top: 20px; height: 300px; overflow-y: auto; border-radius: 10px;">
+                    <div id="logs-container" class="log-container"></div>
+                </div>
+
+                <button class="btn btn-warning" style="width: 100%; margin-top: 20px;" onclick="clearLogs()">
+                    🗑️ Очистить логи
+                </button>
+            </div>
+        </div>
+
+      <div class="footer">
+        <p>
+          ESP32 Knitting Machine Controller v2.0 | IP:
+          <span id="device-ip">-</span>
+        </p>
+        <p>🌸 Создано с любовью для вязания 🌸</p>
+      </div>
+    </div>
+
+   <script>
+    // --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
+    let isKnitting = false;
+    let currentRow = 0;
+    let currentColumn = 0;
+    let totalRows = 0;
+    let totalColumns = 0;
+    let patternGrid = null; // Глобальная переменная для паттерна
+
+    // Интервалы
+    let statusIntervalId = null;
+    let signalIntervalId = null;
+    let patternIntervalId = null; // Для обновления паттерна (если нужно часто)
+    let logsIntervalId = null; // Для обновления логов
+
+    // --- КОНСТАНТЫ ---
+    const MAX_LOGS_STORED = 100; // Максимальное количество логов в localStorage
+    const LOGS_STORAGE_KEY = 'knitting_logs'; // Ключ для localStorage
+
+    // --- ФУНКЦИИ УПРАВЛЕНИЯ ---
+    function toggleKnitting() {
+        if (isKnitting) {
+            stopKnitting();
+        } else {
+            startKnitting();
+        }
+    }
+    function testLog(){
+      fetch('/test_log', { method: 'POST' })
+            .then(response => response.text())
+            .then(data => {
+                if (data === 'OK') {
+                    console.log("Сраный лог отправлен, блять!");
+                } else {
+                    console.error("Ошибка ебучая!", data);
+                }
+            })
+            .catch(error => console.error('Error:', error));
+    }
+    function startKnitting() {
+        fetch('/start_knitting', { method: 'POST' })
+            .then(response => response.text())
+            .then(data => {
+                if (data === 'OK') {
+                    isKnitting = true; // <-- ДОБАВЛЕНО
+                    updateControlButton();
+                    console.log("Вязание запущено.");
+                } else {
+                    console.error("Ошибка запуска вязания:", data);
+                }
+            })
+            .catch(error => console.error('Error:', error));
+    }
+
+    function stopKnitting() {
+        fetch('/stop_knitting', { method: 'POST' })
+            .then(response => response.text())
+            .then(data => {
+                if (data === 'OK') {
+                    isKnitting = false; // <-- ДОБАВЛЕНО
+                    updateControlButton();
+                    console.log("Вязание остановлено.");
+                } else {
+                    console.error("Ошибка остановки вязания:", data);
+                }
+            })
+            .catch(error => console.error('Error:', error));
+    }
+
+    function updateControlButton() {
+        const btn = document.getElementById('control-btn');
+        if (btn) {
+            if (isKnitting) {
+                btn.textContent = '⏸️ Остановить вязание';
+                btn.onclick = stopKnitting;
+            } else {
+                btn.textContent = '▶️ Запустить вязание';
+                btn.onclick = startKnitting;
+            }
+        }
+    }
+
+    // --- ПЕРЕКЛЮЧЕНИЕ ВКЛАДОК ---
+    function switchTab(tabName) {
+        // Остановить интервалы, связанные с текущей активной вкладкой
+        const activeMain = document.getElementById('main-tab').classList.contains('active');
+        const activePattern = document.getElementById('pattern-tab').classList.contains('active');
+        const activeLogs = document.getElementById('logs-tab').classList.contains('active');
+
+        if (activeMain) {
+            // Основная вкладка: остановить статус и сигналы
+            if (statusIntervalId) clearInterval(statusIntervalId);
+            if (signalIntervalId) clearInterval(signalIntervalId);
+            statusIntervalId = null;
+            signalIntervalId = null;
+        }
+        if (activePattern) {
+            // Паттерн вкладка: остановить обновление паттерна
+            if (patternIntervalId) clearInterval(patternIntervalId);
+            patternIntervalId = null;
+        }
+        if (activeLogs) {
+            // Логи вкладка: остановить обновление логов
+            if (logsIntervalId) clearInterval(logsIntervalId);
+            logsIntervalId = null;
+        }
+
+        // Скрыть все вкладки
+        document.querySelectorAll('.tab-content').forEach(el => {
+            el.classList.remove('active');
+        });
+        // Снять активность с табов
+        document.querySelectorAll('.nav-tab').forEach(el => {
+            el.classList.remove('active');
+        });
+
+        // Показать выбранную вкладку
+        const targetTab = document.getElementById(`${tabName}-tab`);
+        if (targetTab) {
+            targetTab.classList.add('active');
+            // Активировать соответствующий таб
+            document.querySelector(`.nav-tab[onclick="switchTab('${tabName}')"]`).classList.add('active');
+
+            // Запустить интервалы для новой вкладки
+            if (tabName === 'main') {
+                // Запускаем обновление статуса и сигналов
+                if (!statusIntervalId) statusIntervalId = setInterval(updateStatus, 1000);
+                if (!signalIntervalId) signalIntervalId = setInterval(updateSignalStatus, 500);
+            } else if (tabName === 'pattern') {
+                // Запускаем обновление паттерна (если нужно часто, например, раз в 2 сек)
+                // Если паттерн обновляется редко, можно вызвать updatePattern() один раз
+                updatePattern(); // Обновить паттерн при открытии вкладки
+                // if (!patternIntervalId) patternIntervalId = setInterval(updatePattern, 2000);
+            } else if (tabName === 'logs') {
+                // Запускаем обновление логов ПРИ ПЕРЕКЛЮЧЕНИИ НА ВКЛАДКУ
+                if (!logsIntervalId) {
+                    console.log("Starting logs update interval for 'logs' tab.");
+                    logsIntervalId = setInterval(fetchAndDisplayLogs, 2000); // Обновляем каждые 2 секунды
+                }
+                // Загрузить логи сразу при открытии вкладки
+                fetchAndDisplayLogs();
+            }
+        }
+    }
+
+
+    // --- ОБНОВЛЕНИЕ СТАТУСА ---
+    function updateStatus() {
+        fetch('/knitting_status')
+            .then(response => response.json())
+            .then(data => {
+                currentRow = data.currentRow;
+                currentColumn = data.currentColumn;
+                totalRows = data.totalRows;
+                totalColumns = data.totalColumns;
+                isKnitting = data.isKnitting; // Обновляем глобальный статус
+
+                // Обновление прогресса
+                const progress = totalRows > 0 ? (currentRow / totalRows) * 100 : 0;
+                document.getElementById('progress-bar').style.width = `${Math.min(progress, 100)}%`;
+
+                // Обновление статистики
+                document.getElementById('current-row').textContent = currentRow;
+                document.getElementById('current-column').textContent = currentColumn;
+                document.getElementById('total-rows').textContent = totalRows;
+                document.getElementById('total-columns').textContent = totalColumns;
+
+                // Обновляем кнопку управления, если статус изменился не через UI
+                updateControlButton();
+            })
+            .catch(error => console.error('Error fetching status:', error));
+    }
+
+    // --- ОБНОВЛЕНИЕ СОСТОЯНИЯ СИГНАЛОВ ---
+    function updateSignalStatus() {
+         fetch('/signal_status')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('ccp-value').textContent = data.ccp;
+                document.getElementById('hok-value').textContent = data.hok;
+                document.getElementById('ksl-value').textContent = data.ksl;
+                document.getElementById('nd1-value').textContent = data.nd1;
+                document.getElementById('dob-value').textContent = data.dob;
+            })
+            .catch(error => console.error('Error fetching signal status:', error));
+    }
+
+    // --- ОБНОВЛЕНИЕ ПАТТЕРНА ---
+    function updatePattern() {
+        if (!patternGrid) {
+             patternGrid = document.getElementById('pattern-grid');
+             if (!patternGrid) {
+                 console.error("Pattern grid element not found!");
+                 return;
+             }
+             // Инициализация сетки (один раз)
+             // Убираем инициализацию из onload, чтобы не дублировалась
+             // Здесь можно создать пустую сетку, если нужно
+             // или просто дождаться первого обновления данных
+        }
+
+        // Загрузка паттерна как текста
+        fetch('/pat.txt') // Или другой эндпоинт, если паттерн меняется
+            .then(response => response.text())
+            .then(text => {
+                const lines = text.split('\n').filter(line => line.trim() !== '');
+                const rows = lines;
+                const cols = Math.max(...rows.map(r => r.length), 0);
+
+                // Убедимся, что сетка создана с правильным количеством ячеек
+                const totalCells = rows.length * cols;
+                const existingCells = patternGrid.querySelectorAll('.pattern-cell');
+                if (existingCells.length !== totalCells) {
+                     patternGrid.innerHTML = ''; // Очищаем старую сетку
+                     for (let i = 0; i < totalCells; i++) {
+                         const cell = document.createElement('div');
+                         cell.className = 'pattern-cell';
+                         patternGrid.appendChild(cell);
+                     }
+                }
+
+                const cells = patternGrid.querySelectorAll('.pattern-cell');
+
+                rows.forEach((row, rowIndex) => {
+                    row.split('').forEach((char, colIndex) => {
+                        const index = rowIndex * cols + colIndex;
+                        if (index < cells.length) {
+                            if (char === '#' || char === '@' || char === 'X' || char === 'x') {
+                                cells[index].classList.add('active');
+                            } else {
+                                cells[index].classList.remove('active');
+                            }
+                        }
+                    });
+                });
+
+                // Выделение текущей позиции (только если на вкладке "Паттерн")
+                if (document.getElementById('pattern-tab').classList.contains('active')) {
+                     cells.forEach(cell => {
+                         cell.style.borderColor = '#ddd';
+                         cell.style.borderWidth = '1px';
+                     });
+                     const currentIndex = currentRow * cols + currentColumn;
+                     if (currentIndex < cells.length) {
+                         cells[currentIndex].style.borderColor = '#e77e6d';
+                         cells[currentIndex].style.borderWidth = '2px';
+                     }
+                }
+            })
+            .catch(error => console.error('Error fetching pattern:', error));
+    }
+
+
+    // --- РАБОТА С ЛОГАМИ (localStorage) ---
+    function loadLogsFromStorage() {
+        try {
+            const storedJson = localStorage.getItem(LOGS_STORAGE_KEY);
+            if (storedJson) {
+                const logs = JSON.parse(storedJson);
+                // Убедимся, что это массив
+                if (Array.isArray(logs)) {
+                    // Ограничиваем количество логов
+                    return logs.slice(-MAX_LOGS_STORED);
+                }
+            }
+            return []; // Если нет данных или ошибка, возвращаем пустой массив
+        } catch (e) {
+            console.error('Error parsing logs from localStorage:', e);
+            return [];
+        }
+    }
+
+    function saveLogsToStorage(logs) {
+        try {
+            // Ограничиваем количество логов при сохранении
+            const logsToSave = logs.slice(-MAX_LOGS_STORED);
+            localStorage.setItem(LOGS_STORAGE_KEY, JSON.stringify(logsToSave));
+        } catch (e) {
+            console.error('Error saving logs to localStorage:', e);
+            // Если не удалось сохранить, всё равно не паникуем
+        }
+    }
+
+    function clearLogs() {
+        console.log("Clearing logs from storage and display.");
+        localStorage.removeItem(LOGS_STORAGE_KEY);
+        // Очищаем контейнер на текущей вкладке, если она "Логи"
+        const logsContainer = document.getElementById('logs-container');
+        if (logsContainer && document.getElementById('logs-tab').classList.contains('active')) {
+            logsContainer.innerHTML = '';
+        }
+    }
+
+    // --- ОБНОВЛЕНИЕ ЛОГОВ (объединённая логика) ---
+    async function fetchAndDisplayLogs() {
+        // Проверим, существует ли контейнер ПЕРЕД fetch
+        const logsContainer = document.getElementById('logs-container');
+        if (!logsContainer) {
+             console.error("CRITICAL ERROR: Logs container element '#logs-container' not found in DOM!");
+             console.log("Available elements with 'logs' in ID:", Array.from(document.querySelectorAll('[id*="logs"]')).map(el => el.id));
+             // Остановим интервал, если контейнер исчез
+             if (logsIntervalId) {
+                 clearInterval(logsIntervalId);
+                 logsIntervalId = null;
+                 console.log("Logs update interval stopped due to missing container.");
+             }
+             return;
+        }
+
+        console.log("Fetching logs from /logs..."); // Отладочное сообщение
+
+        try {
+            const response = await fetch('/logs'); // Запрашиваем логи с сервера
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const newLogsArray = await response.json(); // Получаем массив новых логов от сервера
+            console.log("Received new logs from server:", newLogsArray); // Отладочное сообщение
+
+            // Получаем текущие логи из localStorage
+            let currentLogs = loadLogsFromStorage();
+            console.log("Loaded logs from storage:", currentLogs);
+
+            // Объединяем старые и новые логи
+            const combinedLogs = [...currentLogs, ...newLogsArray];
+
+            // Ограничиваем количество логов
+            const finalLogs = combinedLogs.slice(-MAX_LOGS_STORED);
+
+            // Сохраняем обновлённый список в localStorage
+            saveLogsToStorage(finalLogs);
+            console.log("Saved updated logs to storage. Count:", finalLogs.length);
+
+            // Очищаем контейнер и отображаем ВСЕ сохранённые логи
+            logsContainer.innerHTML = ''; // Очищаем перед отображением
+
+            finalLogs.forEach(entry => {
+                const logEntryDiv = document.createElement('div');
+                logEntryDiv.className = 'log-entry';
+
+                const timeSpan = document.createElement('span');
+                timeSpan.className = 'log-timestamp';
+                timeSpan.textContent = entry.timestamp;
+                logEntryDiv.appendChild(timeSpan);
+
+                const levelSpan = document.createElement('span');
+                levelSpan.className = `log-level log-level-${entry.level.toLowerCase()}`;
+                levelSpan.textContent = `[${entry.level}] `;
+                logEntryDiv.appendChild(levelSpan);
+
+                const messageSpan = document.createElement('span');
+                messageSpan.className = 'log-message';
+                messageSpan.textContent = entry.message;
+                logEntryDiv.appendChild(messageSpan);
+
+                logsContainer.appendChild(logEntryDiv);
+            });
+
+            // Прокрутим вниз
+            logsContainer.scrollTop = logsContainer.scrollHeight;
+
+        } catch (error) {
+            console.error('Error fetching or displaying logs:', error);
+            // Попробуем отобразить только сохранённые логи из localStorage
+            const savedLogs = loadLogsFromStorage();
+            logsContainer.innerHTML = ''; // Очищаем перед отображением
+            if (savedLogs.length > 0) {
+                savedLogs.forEach(entry => {
+                    const logEntryDiv = document.createElement('div');
+                    logEntryDiv.className = 'log-entry';
+                    logEntryDiv.innerHTML = `<span class="log-timestamp">${entry.timestamp}</span> <span class="log-level log-level-${entry.level.toLowerCase()}">[${entry.level}]</span> <span class="log-message">${entry.message}</span>`;
+                    logsContainer.appendChild(logEntryDiv);
+                });
+            } else {
+                // Если даже сохранённых нет, покажем ошибку fetch
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'log-entry';
+                errorDiv.innerHTML = `<span class="log-level log-level-error">[FETCH_ERROR]</span> <span class="log-message">Failed to load logs: ${error.message}. No cached logs available.</span>`;
+                logsContainer.appendChild(errorDiv);
+            }
+            logsContainer.scrollTop = logsContainer.scrollHeight; // Прокрутка к ошибке
+        }
+    }
+
+
+    // --- ИНИЦИАЛИЗАЦИЯ ПРИ ЗАГРУЗКЕ ---
+    window.onload = function() {
+        console.log("Interface loaded.");
+        // При загрузке отображаем сохранённые логи (если есть)
+        const logsContainer = document.getElementById('logs-container');
+        if (logsContainer) {
+            const savedLogs = loadLogsFromStorage();
+            if (savedLogs.length > 0) {
+                 console.log("Displaying", savedLogs.length, "cached logs from localStorage.");
+                 // Отображаем только сохранённые логи при загрузке
+                 savedLogs.forEach(entry => {
+                     const logEntryDiv = document.createElement('div');
+                     logEntryDiv.className = 'log-entry';
+                     logEntryDiv.innerHTML = `<span class="log-timestamp">${entry.timestamp}</span> <span class="log-level log-level-${entry.level.toLowerCase()}">[${entry.level}]</span> <span class="log-message">${entry.message}</span>`;
+                     logsContainer.appendChild(logEntryDiv);
+                 });
+                 logsContainer.scrollTop = logsContainer.scrollHeight; // Прокрутка к последнему логу
+            } else {
+                 console.log("No cached logs found in localStorage.");
+            }
+        }
+
+        // Инициализация паттерна (создание сетки, если нужно, но данные загружаются при открытии вкладки)
+        // patternGrid = document.getElementById('pattern-grid'); // Уже в updatePattern
+
+        // Запуск обновления статуса и сигналов на вкладке "Основное" (она активна по умолчанию)
+        if (!statusIntervalId) statusIntervalId = setInterval(updateStatus, 1000);
+        if (!signalIntervalId) signalIntervalId = setInterval(updateSignalStatus, 500);
+
+        // Обновим статус и сигналы сразу
+        updateStatus();
+        updateSignalStatus();
+    };
+
+    // --- ОЧИСТКА ПРИ ВЫХОДЕ ---
+    window.onbeforeunload = function() {
+        if (statusIntervalId) clearInterval(statusIntervalId);
+        if (signalIntervalId) clearInterval(signalIntervalId);
+        if (patternIntervalId) clearInterval(patternIntervalId);
+        if (logsIntervalId) clearInterval(logsIntervalId);
+    };
+</script>
+  </body>
+</html>
