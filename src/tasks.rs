@@ -2,7 +2,7 @@ use std::ffi::c_void;
 
 use esp_idf_sys::xEventGroupWaitBits;
 use crate::{gpio::{on_ccp_tick_fast, on_hok_change_fast, on_ksl_change, on_nd1_falling_fast}, isr::{BIT_CCP, BIT_HOK, BIT_KSL, BIT_ND1, EVENTS}};
-extern "C" fn engine_task(_: *mut c_void) {
+pub extern "C" fn engine_task(_: *mut c_void) {
     loop {
         let bits = unsafe {
             xEventGroupWaitBits(
@@ -32,3 +32,9 @@ extern "C" fn engine_task(_: *mut c_void) {
     }
 }
 
+pub extern "C" fn logger_task(_: *mut c_void) {
+    loop {
+        
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
