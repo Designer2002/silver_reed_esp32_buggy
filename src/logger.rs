@@ -1,5 +1,6 @@
 use heapless::spsc::Queue;
 use core::cell::UnsafeCell;
+use std::sync::Mutex;
 
 // SAFETY: Only accessed via provided API, SPSC (single producer, single consumer)
 pub struct LogQueue {
@@ -11,6 +12,9 @@ unsafe impl Sync for LogQueue {}
 static LOG_QUEUE: LogQueue = LogQueue {
     queue: UnsafeCell::new(Queue::new()),
 };
+static WEB_LOGS: Mutex<Vec<LogEntry>> = Mutex::new(Vec::new());
+
+
 #[derive(Debug, Clone, Copy)]
 pub struct LogEntry {
     pub timestamp: &'static str, // Ссылка на строку, живущую всю программу
@@ -73,3 +77,17 @@ pub fn pop_log() -> Option<LogEntry> {
     LOG_QUEUE.pop()
 }
 
+
+pub fn push_web_log(entry: LogEntry) {
+    let mut logs = WEB_LOGS.lock().unwrap();
+
+    if logs.len() > 500 {
+        logs.remove(0);
+    }
+
+    logs.push(entry);
+}
+
+pub fn get_logs() -> Vec<LogEntry> {
+    WEB_LOGS.lock().unwrap().clone()
+}
