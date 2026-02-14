@@ -1,63 +1,81 @@
-use esp_idf_hal::gpio::{Gpio4, Gpio18, Gpio19, Gpio21, Gpio22, Input, InterruptType, Output, PinDriver};
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::Ordering;
 
-use crate::event_bus::{Event, push_event};
+use esp_idf_hal::delay::Ets;
 
-pub static GPIO: LazyLock<Mutex<Option<GpioBundle>>> = LazyLock::new(|| Mutex::new(None));
+use crate::state::*;
+use crate::pattern::pattern_get;
 
-pub struct GpioBundle {
-    pub nd1: PinDriver<'static, Gpio22, Input>,
-    pub ksl: PinDriver<'static, Gpio21, Input>,
-    pub ccp: PinDriver<'static, Gpio18, Input>,
-    pub hok: PinDriver<'static, Gpio19, Input>,
-    pub dob: PinDriver<'static, Gpio4, Output>,
-}
-
-pub fn dob_fire() {
-    if let Some(ref mut gpio) = *GPIO.lock().unwrap() {
-        let _ = gpio.dob.set_low();
-        esp_idf_hal::delay::Ets::delay_us(100);
-        let _ = gpio.dob.set_high();
-    }
-}
-
-pub fn read_inputs() -> Option<(bool,bool,bool,bool)> {
-    let guard = GPIO.lock().unwrap();
-    let gpio = guard.as_ref()?;
-
-    Some((
-        gpio.ccp.is_high(),
-        gpio.hok.is_high(),
-        gpio.ksl.is_high(),
-        gpio.nd1.is_high(),
-    ))
-}
-
-pub fn install_ccp_interrupt() {
-    let mut guard = GPIO.lock().unwrap();
-    let gpio = guard.as_mut().unwrap();
-
-    gpio.ccp.set_interrupt_type(InterruptType::PosEdge).unwrap();
-
+pub fn gpio_set_low(pin: i32) {
     unsafe {
-        gpio.ccp.subscribe(|| {
-            push_event(Event::CCP);
-        }).unwrap();
+        esp_idf_sys::gpio_set_level(pin, 0);
     }
-
-    gpio.ccp.enable_interrupt().unwrap();
 }
 
-pub fn get_pin_state_json() -> String
-{
-    let mut guard = GPIO.lock().unwrap();
-    let gpio = guard.as_mut().unwrap();
-    let json = format!(
-            r#"{{"ccp":{},"ksl":{},"nd1":{},"hok":{}}}"#,
-            gpio.ccp.is_high(),
-            gpio.ksl.is_high(),
-            gpio.nd1.is_high(),
-            gpio.hok.is_high()
-        );
-    json
+pub fn gpio_set_high(pin: i32) {
+    unsafe {
+        esp_idf_sys::gpio_set_level(pin, 1);
+    }
+}
+
+#[inline(always)]
+pub fn dob_fire_fast() {
+        gpio_set_low(DOB);
+        Ets::delay_us(3);
+        gpio_set_high(DOB);
+}
+
+#[inline(always)]
+pub fn on_ccp_tick_fast() {
+    if !KNITTING.load(Ordering::Relaxed) {
+        return;
+    }
+
+    if DIR_RIGHT.load(Ordering::Relaxed) {
+        NEEDLE.fetch_add(1, Ordering::Relaxed);
+    } else {
+        NEEDLE.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    if INSIDE_PATTERN.load(Ordering::Relaxed) {
+        let row = ROW.load(Ordering::Relaxed);
+        let needle = NEEDLE.load(Ordering::Relaxed);
+
+        if pattern_get(row, needle) {
+            dob_fire_fast();
+        }
+    }
+}
+
+pub fn on_hok_change_fast(level: bool) {
+    DIR_RIGHT.store(level, Ordering::Relaxed);
+}
+
+pub fn on_nd1_falling_fast() {
+    if DIR_RIGHT.load(Ordering::Relaxed) {
+        NEEDLE.store(-1, Ordering::Relaxed);
+    }
+}
+
+pub fn on_ksl_change(level: bool) {
+    let dir = DIR_RIGHT.load(Ordering::Relaxed);
+
+    if level {
+        // вошли в узор
+        INSIDE_PATTERN.store(true, Ordering::Relaxed);
+
+        let width = WIDTH.load(Ordering::Relaxed) as i32;
+
+        if dir {
+            NEEDLE.store(-1, Ordering::Relaxed);
+        } else {
+            NEEDLE.store(width, Ordering::Relaxed);
+        }
+
+    } else {
+        // вышли из узора = новая строка
+        INSIDE_PATTERN.store(false, Ordering::Relaxed);
+        ROW.fetch_add(1, Ordering::Relaxed);
+    }
+
+    
 }
