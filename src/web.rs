@@ -1,5 +1,6 @@
 use crate::gpio::get_pin_state_json;
 use crate::pattern::KNITTING_PATTERN;
+use crate::state::{HEIGHT, KNITTING, NEEDLE, ROW, WIDTH};
 use crate::tasks::{start_knitting, stop_knitting};
 use crate::logger::{get_logs};
 use anyhow::Ok;
@@ -39,7 +40,7 @@ pub fn connect_wifi(wifi: &mut BlockingWifi<EspWifi<'static>>) -> anyhow::Result
     Ok(())
 }
 
-pub fn init_server(mut server: EspHttpServer) -> anyhow::Result<()> {
+pub fn init_server(server: &mut EspHttpServer) -> anyhow::Result<()> {
     //pat.txt handler
     server.fn_handler("/pat.txt", Method::Get, |req| -> anyhow::Result<()> {
         let mut resp = req.into_ok_response()?;
@@ -109,10 +110,25 @@ pub fn init_server(mut server: EspHttpServer) -> anyhow::Result<()> {
         resp.write_all(json.as_bytes())?;
         Ok(())
     })?;
-    server.fn_handler("/signals", Method::Get, |req| -> anyhow::Result<()> {
+    server.fn_handler("/signal_status", Method::Get, |req| -> anyhow::Result<()> {
         let json = get_pin_state_json();
         let mut resp = req.into_ok_response()?;
         resp.write_all(json.as_bytes())?;
+        Ok(())
+    })?;
+
+    // Статус вязания
+    server.fn_handler("/knitting_status", Method::Get, |_req| -> anyhow::Result<()> {
+        let response_json = format!(
+            r#"{{"currentRow": {}, "currentColumn": {}, "totalRows": {}, "totalColumns": {}, "isKnitting": {}}}"#,
+            ROW.load(std::sync::atomic::Ordering::Relaxed),
+            NEEDLE.load(std::sync::atomic::Ordering::Relaxed),
+            HEIGHT.load(std::sync::atomic::Ordering::Relaxed),
+            WIDTH.load(std::sync::atomic::Ordering::Relaxed),
+            KNITTING.load(std::sync::atomic::Ordering::Relaxed)
+        );
+        let mut resp = _req.into_ok_response()?;
+        resp.write_all(response_json.as_bytes())?;
         Ok(())
     })?;
 

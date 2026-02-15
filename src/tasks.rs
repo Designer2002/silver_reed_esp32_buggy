@@ -1,13 +1,20 @@
 use std::{ffi::c_void, thread, time::Duration};
 
+use crate::{
+    gpio::{on_ccp_tick_fast, on_hok_change_fast, on_ksl_change, on_nd1_falling_fast},
+    isr::{get_handle, BIT_CCP, BIT_HOK, BIT_KSL, BIT_ND1},
+    logger::{log, pop_log, push_web_log},
+    state,
+};
 use esp_idf_sys::xEventGroupWaitBits;
-use crate::{gpio::{on_ccp_tick_fast, on_hok_change_fast, on_ksl_change, on_nd1_falling_fast}, isr::{BIT_CCP, BIT_HOK, BIT_KSL, BIT_ND1, EVENTS}, logger::{log, pop_log, push_web_log}, state};
+use log::info;
 pub extern "C" fn engine_task(_: *mut c_void) {
+    info!("Engine task started");
     let mut row = 0;
     loop {
         let bits = unsafe {
             xEventGroupWaitBits(
-                EVENTS,
+                get_handle(),
                 BIT_CCP | BIT_ND1 | BIT_KSL | BIT_HOK,
                 true as i32,
                 false as i32,
@@ -33,12 +40,13 @@ pub extern "C" fn engine_task(_: *mut c_void) {
         }
 
         if bits & BIT_CCP != 0 {
-            on_ccp_tick_fast();   // САМЫЙ ВАЖНЫЙ
+            on_ccp_tick_fast(); // САМЫЙ ВАЖНЫЙ
         }
     }
 }
 
 pub extern "C" fn logger_task(_: *mut c_void) {
+    info!("Logger task started");
     loop {
         let mut had_logs = false;
 
@@ -46,12 +54,7 @@ pub extern "C" fn logger_task(_: *mut c_void) {
             had_logs = true;
 
             // UART
-            println!(
-                "[{}] {}: {}",
-                entry.timestamp,
-                entry.level,
-                entry.message
-            );
+            println!("[{}] {}: {}", entry.timestamp, entry.level, entry.message);
 
             // кладём в веб буфер
             push_web_log(entry);
@@ -63,19 +66,20 @@ pub extern "C" fn logger_task(_: *mut c_void) {
             thread::sleep(Duration::from_millis(2));
         }
     }
+    std::thread::sleep(Duration::from_secs(1));
 }
 
-pub fn init_knitter(){
-    log("INFO","Initializing knitter...");
+pub fn init_knitter() {
+    log("INFO", "Initializing knitter...");
     state::KNITTING.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
-pub fn start_knitting(){
-    log("INFO","Starting knitting...");
+pub fn start_knitting() {
+    log("INFO", "Starting knitting...");
     state::KNITTING.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-pub fn stop_knitting(){
-    log("INFO","Stopping knitting...");
+pub fn stop_knitting() {
+    log("INFO", "Stopping knitting...");
     state::KNITTING.store(false, std::sync::atomic::Ordering::Relaxed);
 }
