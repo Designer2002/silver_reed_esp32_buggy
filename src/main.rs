@@ -38,7 +38,6 @@ fn main() -> anyhow::Result<()> {
         gpio_install_isr_service(0);
     }
     init_knitter();
-    install_isrs();
 
     // Thread name must be a valid C string (null-terminated, no embedded nulls)
     ThreadSpawnConfiguration {

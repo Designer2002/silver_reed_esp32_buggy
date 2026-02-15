@@ -1,5 +1,5 @@
 use core::ptr::null_mut;
-use esp_idf_sys::{xEventGroupCreate, xEventGroupSetBits, EventGroupDef_t};
+use esp_idf_sys::{EventGroupDef_t, xEventGroupClearBits, xEventGroupCreate, xEventGroupSetBits};
 use std::{
     ffi::c_void,
     sync::atomic::{AtomicPtr, Ordering},
@@ -60,3 +60,14 @@ pub fn install_isrs() {
         esp_idf_sys::gpio_isr_handler_add(ND1, Some(nd1_isr), null_mut());
     }
 }
+
+
+pub fn uninstall_isrs() {
+    unsafe {
+        esp_idf_sys::gpio_isr_handler_remove(CCP);
+        esp_idf_sys::gpio_isr_handler_remove(HOK);
+        esp_idf_sys::gpio_isr_handler_remove(KSL);
+        esp_idf_sys::gpio_isr_handler_remove(ND1);
+    }
+}
+

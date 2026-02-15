@@ -71,6 +71,8 @@ pub fn on_ccp_tick_fast() {
 
 pub fn on_hok_change_fast(level: bool) {
     DIR_RIGHT.store(level, Ordering::Relaxed);
+    let lvl_static: &'static str = if level { "HIGH" } else { "LOW" };
+    log("DEBUG", Box::leak(format!("HOK change detected, direction updated to {}", lvl_static).into_boxed_str()));
 }
 
 pub fn on_nd1_falling_fast() {
