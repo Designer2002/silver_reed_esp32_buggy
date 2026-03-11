@@ -1,6 +1,8 @@
 use std::{ffi::c_void, thread, time::Duration};
 
+use crate::gpio::read_pin_strong_high;
 use crate::queue::{EVT_CCP, EVT_HOK, EVT_KSL, EVT_ND1, QUEUE};
+use crate::state::ND1;
 use crate::{
     gpio::{on_ccp_tick_fast, on_hok_change_fast, on_ksl_change, on_nd1_falling_fast},
     isr::{install_isrs, uninstall_isrs},
@@ -8,11 +10,9 @@ use crate::{
     state::{self, HOK, KSL},
 };
 use log::info;
-
+pub static mut ND1_LAST: bool = true;
 pub extern "C" fn engine_task(_: *mut c_void) {
     info!("Engine task started");
-
-    let mut row = 0;
 
     loop {
         let evt = QUEUE.recv_front(1u32);
@@ -23,17 +23,23 @@ pub extern "C" fn engine_task(_: *mut c_void) {
                     on_ccp_tick_fast();
                 }
 
-                // EVT_ND1 => {
-                //     on_nd1_falling_fast();
-                // }
+                EVT_ND1 => {
+                    let level = unsafe { esp_idf_sys::gpio_get_level(ND1) };
+
+                    unsafe {
+                        if ND1_LAST && level == 0 && read_pin_strong_high(ND1) {
+                            // реальный фронт
+                            on_nd1_falling_fast();
+                        }
+
+                        if level == 1 { ND1_LAST = true;}
+                        else {ND1_LAST = false;}
+                    }
+                }
 
                 EVT_KSL => {
                     let level = unsafe { esp_idf_sys::gpio_get_level(KSL) };
                     on_ksl_change(level == 1);
-
-                    row += 1;
-                    let msg = format!("KSL change detected, row updated to {}", row);
-                    log("DEBUG", Box::leak(msg.into_boxed_str()));
                 }
 
                 EVT_HOK => {
