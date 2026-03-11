@@ -6,15 +6,11 @@ use esp_idf_svc::{
     nvs::EspDefaultNvsPartition,
     wifi::{BlockingWifi, EspWifi},
 };
-use esp_idf_sys::{esp_wifi_set_ps, gpio_install_isr_service, link_patches, wifi_ps_type_t, wifi_ps_type_t_WIFI_PS_NONE};
+use esp_idf_sys::{esp_wifi_set_ps, gpio_install_isr_service, link_patches, wifi_ps_type_t_WIFI_PS_NONE};
 use log::info;
 
 use crate::{
-    isr::{init_event_group, install_isrs},
-    pattern::PATTERN,
-    state::{HEIGHT, WIDTH},
-    tasks::{engine_task, init_knitter, logger_task},
-    web::connect_wifi,
+    gpio::init_pins, isr::{init_event_group, install_isrs}, pattern::PATTERN, state::{HEIGHT, WIDTH}, tasks::{engine_task, init_knitter, logger_task}, web::connect_wifi
 };
 use core::sync::atomic::Ordering;
 use std::ptr::null_mut;
@@ -34,6 +30,7 @@ fn main() -> anyhow::Result<()> {
     WIDTH.store(PATTERN.width, Ordering::Relaxed);
     HEIGHT.store(PATTERN.height, Ordering::Relaxed);
     init_event_group();
+    init_pins();
     unsafe {
         gpio_install_isr_service(0);
     }

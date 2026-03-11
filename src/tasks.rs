@@ -11,7 +11,6 @@ use log::info;
 pub extern "C" fn engine_task(_: *mut c_void) {
     info!("Engine task started");
     let mut row = 0;
-    let mut test = 0;
     loop {
         let bits = unsafe {
             xEventGroupWaitBits(
@@ -19,10 +18,9 @@ pub extern "C" fn engine_task(_: *mut c_void) {
                 BIT_CCP | BIT_ND1 | BIT_KSL | BIT_HOK,
                 true as i32,
                 false as i32,
-                u32::MAX,
+                1u32,
             )
         };
-
         if bits & BIT_HOK != 0 {
             on_hok_change_fast(true);
         }
@@ -41,12 +39,6 @@ pub extern "C" fn engine_task(_: *mut c_void) {
         if bits & BIT_CCP != 0 {
             on_ccp_tick_fast(); // САМЫЙ ВАЖНЫЙ
         }
-        test += 1;
-        if test == 5 {
-            log("DEBUG", "Test log entry from engine task");
-            test = 0;
-        }
-        std::thread::sleep(std::time::Duration::from_nanos(1));
     }
 }
 

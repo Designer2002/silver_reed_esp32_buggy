@@ -1,5 +1,5 @@
 use core::ptr::null_mut;
-use esp_idf_sys::{EventGroupDef_t, xEventGroupClearBits, xEventGroupCreate, xEventGroupSetBits};
+use esp_idf_sys::{EventGroupDef_t, xEventGroupCreate, xEventGroupSetBits};
 use std::{
     ffi::c_void,
     sync::atomic::{AtomicPtr, Ordering},

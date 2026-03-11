@@ -1,5 +1,6 @@
-use crate::logger::log;
 use esp_idf_hal::delay::Ets;
+
+use crate::logger::log;
 use std::sync::atomic::Ordering;
 
 use crate::pattern::pattern_get;
@@ -28,6 +29,30 @@ pub fn get_pin_state_json() -> String {
     response_json
 }
 
+pub fn init_pins() {
+    unsafe {
+        esp_idf_sys::gpio_reset_pin(CCP);
+        esp_idf_sys::gpio_reset_pin(HOK);
+        esp_idf_sys::gpio_reset_pin(KSL);
+        esp_idf_sys::gpio_reset_pin(ND1);
+        esp_idf_sys::gpio_reset_pin(DOB);
+
+        esp_idf_sys::gpio_set_direction(CCP, esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT);
+        esp_idf_sys::gpio_set_direction(HOK, esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT);
+        esp_idf_sys::gpio_set_direction(KSL, esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT);
+        esp_idf_sys::gpio_set_direction(ND1, esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT);
+        esp_idf_sys::gpio_set_direction(DOB, esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT);
+
+        esp_idf_sys::gpio_set_level(DOB, 1);
+
+        // // Включаем подтяжку для входов, чтобы избежать "плавающего" состояния
+        esp_idf_sys::gpio_pullup_en(CCP);
+        esp_idf_sys::gpio_pullup_en(HOK);
+        esp_idf_sys::gpio_pullup_en(KSL);
+        esp_idf_sys::gpio_pullup_en(ND1);
+    }
+}
+
 pub fn gpio_set_low(pin: i32) {
     unsafe {
         esp_idf_sys::gpio_set_level(pin, 0);
@@ -50,6 +75,7 @@ pub fn dob_fire_fast() {
 #[inline(always)]
 pub fn on_ccp_tick_fast() {
     if !KNITTING.load(Ordering::Relaxed) {
+        log("ERROR", "CCP tick ignored because knitting is not active");
         return;
     }
 
@@ -70,7 +96,8 @@ pub fn on_ccp_tick_fast() {
 }
 
 pub fn on_hok_change_fast(level: bool) {
-    DIR_RIGHT.store(level, Ordering::Relaxed);
+    //инверсия так как оптопара 6n137 инвертирует выход
+    DIR_RIGHT.store(!level, Ordering::Relaxed);
     let lvl_static: &'static str = if level { "HIGH" } else { "LOW" };
     log("DEBUG", Box::leak(format!("HOK change detected, direction updated to {}", lvl_static).into_boxed_str()));
 }
@@ -85,7 +112,8 @@ pub fn on_nd1_falling_fast() {
 pub fn on_ksl_change(level: bool) {
     let dir = DIR_RIGHT.load(Ordering::Relaxed);
 
-    if level {
+    //инверсия так как оптопара 6n137 инвертирует выход
+    if !level {
         // вошли в узор
         INSIDE_PATTERN.store(true, Ordering::Relaxed);
 

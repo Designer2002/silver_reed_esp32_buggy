@@ -19,11 +19,13 @@ pub fn pattern_get(row: i32, needle: i32) -> bool {
     pattern.rows[row as usize][needle as usize]
 }
 pub fn parse_pattern(pattern: &str) -> KnitPattern {
+
     let rows: Vec<Vec<bool>> = pattern
         .lines()
         .map(|line| {
             line.chars()
-                .map(|c| c == '#' || c == '@' || c == 'X' || c == 'x')
+                .filter(|&c| c != '\\' && c != '\n' && c != 'n') // Убираем символы переноса строки и возврата каретки`)
+                .map(|c| c == '#')
                 .collect()
         })
         .collect();

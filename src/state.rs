@@ -8,7 +8,7 @@ pub static KNITTING: AtomicBool = AtomicBool::new(false);
 pub static WIDTH: AtomicUsize = AtomicUsize::new(0);
 pub static HEIGHT: AtomicUsize = AtomicUsize::new(0);
 
-pub const DOB: i32 = 4;
+pub const DOB: i32 = 23;
 pub const CCP: i32 = 18;
 pub const HOK: i32 = 19;
 pub const KSL: i32 = 21;
