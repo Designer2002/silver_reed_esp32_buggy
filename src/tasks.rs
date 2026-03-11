@@ -1,43 +1,50 @@
 use std::{ffi::c_void, thread, time::Duration};
 
+use crate::queue::{EVT_CCP, EVT_HOK, EVT_KSL, EVT_ND1, QUEUE};
 use crate::{
     gpio::{on_ccp_tick_fast, on_hok_change_fast, on_ksl_change, on_nd1_falling_fast},
-    isr::{BIT_CCP, BIT_HOK, BIT_KSL, BIT_ND1, get_handle, install_isrs, uninstall_isrs},
+    isr::{install_isrs, uninstall_isrs},
     logger::{log, pop_log, push_web_log},
-    state,
+    state::{self, HOK, KSL},
 };
-use esp_idf_sys::xEventGroupWaitBits;
 use log::info;
+
 pub extern "C" fn engine_task(_: *mut c_void) {
     info!("Engine task started");
+
     let mut row = 0;
+
     loop {
-        let bits = unsafe {
-            xEventGroupWaitBits(
-                get_handle(),
-                BIT_CCP | BIT_ND1 | BIT_KSL | BIT_HOK,
-                true as i32,
-                false as i32,
-                1u32,
-            )
-        };
-        if bits & BIT_HOK != 0 {
-            on_hok_change_fast(true);
-        }
+        let evt = QUEUE.recv_front(1u32);
 
-        if bits & BIT_ND1 != 0 {
-            on_nd1_falling_fast();
-        }
+        match evt {
+            Some(signal) => match signal.0 {
+                EVT_CCP => {
+                    on_ccp_tick_fast();
+                }
 
-        if bits & BIT_KSL != 0 {
-            on_ksl_change(true);
-            row += 1;
-            let msg = format!("KSL change detected, row updated to {}", row);
-            log("DEBUG", Box::leak(msg.into_boxed_str()));
-        }
+                // EVT_ND1 => {
+                //     on_nd1_falling_fast();
+                // }
 
-        if bits & BIT_CCP != 0 {
-            on_ccp_tick_fast(); // САМЫЙ ВАЖНЫЙ
+                EVT_KSL => {
+                    let level = unsafe { esp_idf_sys::gpio_get_level(KSL) };
+                    on_ksl_change(level == 1);
+
+                    row += 1;
+                    let msg = format!("KSL change detected, row updated to {}", row);
+                    log("DEBUG", Box::leak(msg.into_boxed_str()));
+                }
+
+                EVT_HOK => {
+                    let level = unsafe { esp_idf_sys::gpio_get_level(HOK) };
+                    on_hok_change_fast(level == 1);
+                }
+
+                _ => {}
+            },
+
+            None => {}
         }
     }
 }

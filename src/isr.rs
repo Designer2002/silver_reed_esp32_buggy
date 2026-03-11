@@ -1,67 +1,36 @@
-use core::ptr::null_mut;
-use esp_idf_sys::{EventGroupDef_t, xEventGroupCreate, xEventGroupSetBits};
-use std::{
-    ffi::c_void,
-    sync::atomic::{AtomicPtr, Ordering},
-};
+use esp_idf_sys::gpio_int_type_t_GPIO_INTR_NEGEDGE;
 
-use crate::state::{CCP, HOK, KSL, ND1};
-pub const BIT_CCP: u32 = 1u32 << 0;  // 0x01
-pub const BIT_ND1: u32 = 1u32 << 1;  // 0x02
-pub const BIT_KSL: u32 = 1u32 << 2;  // 0x04
-pub const BIT_HOK: u32 = 1u32 << 3;  // 0x08
-static EVENTS: AtomicPtr<EventGroupDef_t> = AtomicPtr::new(core::ptr::null_mut());
-pub fn get_handle() -> *mut EventGroupDef_t {
-    let handle = EVENTS.load(Ordering::SeqCst);
-    if handle.is_null() {
-        panic!("Event group not initialized");
-    }
-    handle
+use crate::{queue::{EVT_CCP, EVT_HOK, EVT_KSL, EVT_ND1, QUEUE}, state::{CCP, HOK, KSL, ND1}};
+
+extern "C" fn ccp_isr(_: *mut core::ffi::c_void) {
+    let _ = QUEUE.send_front(EVT_CCP, 1u32);
 }
 
-pub fn init_event_group() {
-    let handle = unsafe { xEventGroupCreate() };
-    if handle.is_null() {
-        panic!("Failed to create event group (out of memory?)");
-    }
-    EVENTS.store(handle, Ordering::SeqCst);
+extern "C" fn nd1_isr(_: *mut core::ffi::c_void) {
+    let _ = QUEUE.send_front(EVT_ND1, 1u32);
 }
 
-
-extern "C" fn ccp_isr(_: *mut c_void) {
-    unsafe {
-        xEventGroupSetBits(get_handle(), BIT_CCP);
-    }
+extern "C" fn ksl_isr(_: *mut core::ffi::c_void) {
+    let _ = QUEUE.send_front(EVT_KSL, 1u32);
 }
 
-extern "C" fn nd1_isr(_: *mut c_void) {
-    unsafe {
-        xEventGroupSetBits(get_handle(), BIT_ND1);
-    }
-}
-
-extern "C" fn hok_isr(_: *mut c_void) {
-    unsafe {
-        xEventGroupSetBits(get_handle(), BIT_HOK);
-    }
-}
-
-extern "C" fn ksl_isr(_: *mut c_void) {
-    unsafe {
-        xEventGroupSetBits(get_handle(), BIT_KSL);
-    }
+extern "C" fn hok_isr(_: *mut core::ffi::c_void) {
+    let _ = QUEUE.send_front(EVT_HOK, 1u32);
 }
 
 pub fn install_isrs() {
     unsafe {
-        esp_idf_sys::gpio_isr_handler_add(CCP, Some(ccp_isr), null_mut());
-        esp_idf_sys::gpio_isr_handler_add(HOK, Some(hok_isr), null_mut());
-        esp_idf_sys::gpio_isr_handler_add(KSL, Some(ksl_isr), null_mut());
-        esp_idf_sys::gpio_isr_handler_add(ND1, Some(nd1_isr), null_mut());
+        esp_idf_sys::gpio_set_intr_type(CCP, esp_idf_sys::gpio_int_type_t_GPIO_INTR_POSEDGE);
+        esp_idf_sys::gpio_set_intr_type(ND1, gpio_int_type_t_GPIO_INTR_NEGEDGE);
+        esp_idf_sys::gpio_set_intr_type(KSL, esp_idf_sys::gpio_int_type_t_GPIO_INTR_NEGEDGE);
+        esp_idf_sys::gpio_set_intr_type(HOK, esp_idf_sys::gpio_int_type_t_GPIO_INTR_ANYEDGE);
+
+        esp_idf_sys::gpio_isr_handler_add(CCP, Some(ccp_isr), core::ptr::null_mut());
+        esp_idf_sys::gpio_isr_handler_add(ND1, Some(nd1_isr), core::ptr::null_mut());
+        esp_idf_sys::gpio_isr_handler_add(KSL, Some(ksl_isr), core::ptr::null_mut());
+        esp_idf_sys::gpio_isr_handler_add(HOK, Some(hok_isr), core::ptr::null_mut());
     }
 }
-
-
 pub fn uninstall_isrs() {
     unsafe {
         esp_idf_sys::gpio_isr_handler_remove(CCP);
@@ -70,4 +39,3 @@ pub fn uninstall_isrs() {
         esp_idf_sys::gpio_isr_handler_remove(ND1);
     }
 }
-
