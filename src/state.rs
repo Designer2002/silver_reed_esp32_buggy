@@ -7,6 +7,7 @@ pub static INSIDE_PATTERN: AtomicBool = AtomicBool::new(false);
 pub static KNITTING: AtomicBool = AtomicBool::new(false);
 pub static WIDTH: AtomicUsize = AtomicUsize::new(0);
 pub static HEIGHT: AtomicUsize = AtomicUsize::new(0);
+pub static WAS_INSIDE: AtomicBool = AtomicBool::new(false);
 
 pub const DOB: i32 = 23;
 pub const CCP: i32 = 18;

@@ -10,7 +10,7 @@ use esp_idf_sys::{esp_wifi_set_ps, gpio_install_isr_service, link_patches, wifi_
 use log::info;
 
 use crate::{
-    gpio::init_pins, isr::install_isrs, pattern::PATTERN, state::{HEIGHT, WIDTH}, tasks::{engine_task, init_knitter, logger_task}, web::connect_wifi
+    gpio::init_pins, pattern::PATTERN, state::{HEIGHT, WIDTH}, tasks::{engine_task, init_knitter, logger_task}, web::connect_wifi
 };
 use core::sync::atomic::Ordering;
 use std::ptr::null_mut;
@@ -33,8 +33,11 @@ fn main() -> anyhow::Result<()> {
     init_pins();
     unsafe {
         gpio_install_isr_service(0);
+        //create_debounce_timer(core::ptr::null_mut());
+        //init_gpio(ND1, false, true);
     }
     init_knitter();
+    
 
     // Thread name must be a valid C string (null-terminated, no embedded nulls)
     ThreadSpawnConfiguration {

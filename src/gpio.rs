@@ -1,8 +1,10 @@
 use esp_idf_hal::delay::Ets;
-use esp_idf_sys::{esp_timer_get_time, gpio_get_level};
+use esp_idf_sys::{esp_timer_create, esp_timer_create_args_t, esp_timer_dispatch_t_ESP_TIMER_TASK, esp_timer_get_time, esp_timer_handle_t, gpio_get_level, gpio_mode_t_GPIO_MODE_INPUT, gpio_num_t, gpio_pull_mode_t_GPIO_FLOATING, gpio_pull_mode_t_GPIO_PULLDOWN_ONLY, gpio_pull_mode_t_GPIO_PULLUP_ONLY, gpio_reset_pin, gpio_set_direction, gpio_set_pull_mode};
 
 use crate::logger::log;
-use crate::tasks::ND1_LAST;
+use crate::queue::{EVT_ND1, QUEUE};
+use std::ffi::CString;
+use std::ptr;
 use std::sync::atomic::Ordering;
 
 use crate::pattern::pattern_get;
@@ -49,12 +51,53 @@ pub fn init_pins() {
         esp_idf_sys::gpio_set_level(DOB, 1);
 
         // // Включаем подтяжку для входов, чтобы избежать "плавающего" состояния
-        esp_idf_sys::gpio_pullup_en(CCP);
-        esp_idf_sys::gpio_pullup_en(HOK);
+        // esp_idf_sys::gpio_pullup_en(CCP);
+        // esp_idf_sys::gpio_pullup_en(HOK);
         // esp_idf_sys::gpio_pullup_en(KSL);
-        //esp_idf_sys::gpio_pullup_en(ND1);
+        // esp_idf_sys::gpio_pullup_en(ND1);
     }
 }
+
+// pub unsafe fn init_gpio(
+//     gpio: gpio_num_t,
+//     active_level: bool,
+//     int_pull_enabled: bool,
+// ) {
+//     gpio_reset_pin(gpio);
+//     gpio_set_direction(gpio, gpio_mode_t_GPIO_MODE_INPUT);
+
+//     if int_pull_enabled {
+//         if active_level {
+//             gpio_set_pull_mode(gpio, gpio_pull_mode_t_GPIO_PULLDOWN_ONLY);
+//         } else {
+//             gpio_set_pull_mode(gpio, gpio_pull_mode_t_GPIO_PULLUP_ONLY);
+//         }
+//     } else {
+//         gpio_set_pull_mode(gpio, gpio_pull_mode_t_GPIO_FLOATING);
+//     }
+// }
+
+
+// pub static mut TIMER: esp_timer_handle_t = ptr::null_mut();
+// pub unsafe fn create_debounce_timer(arg: *mut core::ffi::c_void) {
+//     if TIMER.is_null() {
+//         let name = CString::new("debounce").unwrap();
+
+//         let mut cfg = esp_timer_create_args_t {
+//             callback: Some(debounce_timeout),
+//             arg,
+//             dispatch_method: esp_timer_dispatch_t_ESP_TIMER_TASK,
+//             name: name.as_ptr(),
+//             skip_unhandled_events: false,
+//         };
+
+//         esp_timer_create(&mut cfg, &mut TIMER);
+//     }
+// }
+
+// pub extern "C" fn debounce_timeout(arg: *mut core::ffi::c_void){
+//     let _ = QUEUE.send_front(EVT_ND1, 1u32);
+// }
 
 pub fn gpio_set_low(pin: i32) {
     unsafe {
@@ -92,6 +135,7 @@ pub fn dob_fire_fast() {
 
 #[inline(always)]
 pub fn on_ccp_tick_fast() {
+    log("DEBUG", "CCP TICK!");
     if !KNITTING.load(Ordering::Relaxed) {
         log("ERROR", "CCP tick ignored because knitting is not active");
         return;
@@ -116,74 +160,43 @@ pub fn on_ccp_tick_fast() {
 }
 
 pub fn on_hok_change_fast(level: bool) {
-    let now = unsafe { esp_timer_get_time() } as u64;
-
-    unsafe {
-        if now - LAST_HOK < 2000 {
-            return; // игнорируем дребезг
-        }
-        LAST_HOK = now;
-    }
     //инверсия так как оптопара 6n137 инвертирует выход
     DIR_RIGHT.store(!level, Ordering::Relaxed);
-    let lvl_static: &'static str = if level { "HIGH" } else { "LOW" };
-    log(
-        "DEBUG",
-        Box::leak(
-            format!("HOK change detected, direction updated to {}", lvl_static).into_boxed_str(),
-        ),
-    );
+    if !level{
+        log("DEBUG", "Direction changed to RIGHT!");
+    }
+    else {
+         log("DEBUG", "Direction changed to LEFT!");
+    }
 }
 
-static mut LAST_ND1: u64 = 0;
-static mut LAST_KSL: u64 = 0;
-static mut LAST_HOK: u64 = 0;
-
 pub fn on_nd1_falling_fast() {
-    let now = unsafe { esp_timer_get_time() } as u64;
 
-    unsafe {
-        if now - LAST_ND1 < 2000 {
-            return;
-        }
-        LAST_ND1 = now;
-    }
-
-    if INSIDE_PATTERN.load(Ordering::Relaxed) {
-        if unsafe { ND1_LAST && gpio_get_level(ND1)  == 0 }{
-            // конец ряда
-            ROW.fetch_add(1, Ordering::Relaxed);
-
-            // сброс игл
-            if DIR_RIGHT.load(Ordering::Relaxed) {
-                NEEDLE.store(-1, Ordering::Relaxed);
-            } else {
-                NEEDLE.store(WIDTH.load(Ordering::Relaxed) as i32, Ordering::Relaxed);
-            }
-
-            log("DEBUG", "ND1 -> end of row");
-        }
+    if unsafe { gpio_get_level(KSL) == 1} {
+        log("ERROR", "ND1 shouldn't be high, why?")
     }
 }
 
 pub fn on_ksl_change(level: bool) {
-    let now = unsafe { esp_timer_get_time() } as u64;
+    let inside = !level; // оптопара
 
-    unsafe {
-        if now - LAST_KSL < 1000 {
-            return;
-        }
-        LAST_KSL = now;
-    }
+    let was_inside = WAS_INSIDE.load(Ordering::Relaxed);
 
-    // оптопара инвертирует
-    let inside = !level;
-
-    INSIDE_PATTERN.store(inside, Ordering::Relaxed);
-
-    if inside {
+    if inside && !was_inside {
         log("DEBUG", "Entered pattern zone");
-    } else {
-        log("DEBUG", "Exited pattern zone");
     }
+
+    if !inside && was_inside {
+        log("DEBUG", "Pattern zone ended -> row++");
+
+        ROW.fetch_add(1, Ordering::Relaxed);
+
+        if DIR_RIGHT.load(Ordering::Relaxed) {
+            NEEDLE.store(-1, Ordering::Relaxed);
+        } else {
+            NEEDLE.store(WIDTH.load(Ordering::Relaxed) as i32, Ordering::Relaxed);
+        }
+    }
+
+    WAS_INSIDE.store(inside, Ordering::Relaxed);
 }

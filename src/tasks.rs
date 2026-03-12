@@ -10,7 +10,6 @@ use crate::{
     state::{self, HOK, KSL},
 };
 use log::info;
-pub static mut ND1_LAST: bool = true;
 pub extern "C" fn engine_task(_: *mut c_void) {
     info!("Engine task started");
 
@@ -24,22 +23,16 @@ pub extern "C" fn engine_task(_: *mut c_void) {
                 }
 
                 EVT_ND1 => {
-                    let level = unsafe { esp_idf_sys::gpio_get_level(ND1) };
-
-                    unsafe {
-                        if ND1_LAST && level == 0 && read_pin_strong_high(ND1) {
-                            // реальный фронт
-                            on_nd1_falling_fast();
-                        }
-
-                        if level == 1 { ND1_LAST = true;}
-                        else {ND1_LAST = false;}
-                    }
+                    on_nd1_falling_fast();
                 }
 
                 EVT_KSL => {
                     let level = unsafe { esp_idf_sys::gpio_get_level(KSL) };
-                    on_ksl_change(level == 1);
+
+                    if level == 1{
+                        on_ksl_change(true);
+                    }
+                    else if level == 0 {on_ksl_change(false);}
                 }
 
                 EVT_HOK => {
