@@ -1,21 +1,8 @@
-use esp_idf_sys::{esp_timer_get_time, esp_timer_start_once, gpio_int_type_t_GPIO_INTR_NEGEDGE, gpio_int_type_t_GPIO_INTR_POSEDGE};
 
-use crate::{queue::{EVT_CCP, EVT_HOK, EVT_KSL, EVT_ND1, QUEUE}, state::{CCP, HOK, KSL, ND1}};
+use crate::{queue::{EVENT, QUEUE}, state::{CCP, HOK, KSL, ND1}};
 
-extern "C" fn ccp_isr(_: *mut core::ffi::c_void) {
-    let _ = QUEUE.send_front(EVT_CCP, 1u32);
-}
-
-pub extern "C" fn nd1_isr(_: *mut core::ffi::c_void)  {
-    let _ = QUEUE.send_front(EVT_ND1, 1u32);
-}
-
-extern "C" fn ksl_isr(_: *mut core::ffi::c_void) {
-    let _ = QUEUE.send_front(EVT_KSL, 1u32);
-}
-
-extern "C" fn hok_isr(_: *mut core::ffi::c_void) {
-    let _ = QUEUE.send_front(EVT_HOK, 1u32);
+extern "C" fn event_isr(_: *mut core::ffi::c_void) {
+    let _ = QUEUE.send_front(EVENT, 1u32);
 }
 
 pub fn install_isrs() {
@@ -25,10 +12,7 @@ pub fn install_isrs() {
         esp_idf_sys::gpio_set_intr_type(KSL, esp_idf_sys::gpio_int_type_t_GPIO_INTR_ANYEDGE);
         esp_idf_sys::gpio_set_intr_type(HOK, esp_idf_sys::gpio_int_type_t_GPIO_INTR_ANYEDGE);
 
-        esp_idf_sys::gpio_isr_handler_add(CCP, Some(ccp_isr), core::ptr::null_mut());
-        esp_idf_sys::gpio_isr_handler_add(ND1, Some(nd1_isr), core::ptr::null_mut());
-        esp_idf_sys::gpio_isr_handler_add(KSL, Some(ksl_isr), core::ptr::null_mut());
-        esp_idf_sys::gpio_isr_handler_add(HOK, Some(hok_isr), core::ptr::null_mut());
+        esp_idf_sys::gpio_isr_handler_add(CCP, Some(event_isr), core::ptr::null_mut());
     }
 }
 pub fn uninstall_isrs() {

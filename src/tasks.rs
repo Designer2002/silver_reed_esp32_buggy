@@ -1,7 +1,5 @@
 use std::{ffi::c_void, thread, time::Duration};
-
-use crate::gpio::read_pin_strong_high;
-use crate::queue::{EVT_CCP, EVT_HOK, EVT_KSL, EVT_ND1, QUEUE};
+use crate::queue::QUEUE;
 use crate::state::ND1;
 use crate::{
     gpio::{on_ccp_tick_fast, on_hok_change_fast, on_ksl_change, on_nd1_falling_fast},
@@ -9,7 +7,13 @@ use crate::{
     logger::{log, pop_log, push_web_log},
     state::{self, HOK, KSL},
 };
+use esp_idf_sys::gpio_get_level;
 use log::info;
+
+static mut LAST_HOK: i32 = 0;
+static mut LAST_KSL: i32 = 0;
+static mut LAST_ND1: i32 = 0;
+
 pub extern "C" fn engine_task(_: *mut c_void) {
     info!("Engine task started");
 
@@ -18,29 +22,34 @@ pub extern "C" fn engine_task(_: *mut c_void) {
 
         match evt {
             Some(signal) => match signal.0 {
-                EVT_CCP => {
+                _ => {
                     on_ccp_tick_fast();
-                }
 
-                EVT_ND1 => {
-                    on_nd1_falling_fast();
-                }
+                    let hok = unsafe { gpio_get_level(HOK) };
+                    let ksl = unsafe { gpio_get_level(KSL) };
+                    let nd1 = unsafe { gpio_get_level(ND1) };
 
-                EVT_KSL => {
-                    let level = unsafe { esp_idf_sys::gpio_get_level(KSL) };
+                    unsafe {
+                        // HOK change
+                        if hok != LAST_HOK {
+                            on_hok_change_fast(hok == 1);
+                            LAST_HOK = hok;
+                        }
 
-                    if level == 1{
-                        on_ksl_change(true);
+                        // KSL change
+                        if ksl != LAST_KSL {
+                            on_ksl_change(ksl == 1);
+                            LAST_KSL = ksl;
+                        }
+
+                        // ND1 falling edge
+                        if LAST_ND1 == 1 && nd1 == 0 {
+                            on_nd1_falling_fast();
+                        }
+
+                        LAST_ND1 = nd1;
                     }
-                    else if level == 0 {on_ksl_change(false);}
                 }
-
-                EVT_HOK => {
-                    let level = unsafe { esp_idf_sys::gpio_get_level(HOK) };
-                    on_hok_change_fast(level == 1);
-                }
-
-                _ => {}
             },
 
             None => {}

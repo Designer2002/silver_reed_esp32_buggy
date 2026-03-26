@@ -1,10 +1,6 @@
 use esp_idf_hal::delay::Ets;
-use esp_idf_sys::{esp_timer_create, esp_timer_create_args_t, esp_timer_dispatch_t_ESP_TIMER_TASK, esp_timer_get_time, esp_timer_handle_t, gpio_get_level, gpio_mode_t_GPIO_MODE_INPUT, gpio_num_t, gpio_pull_mode_t_GPIO_FLOATING, gpio_pull_mode_t_GPIO_PULLDOWN_ONLY, gpio_pull_mode_t_GPIO_PULLUP_ONLY, gpio_reset_pin, gpio_set_direction, gpio_set_pull_mode};
-
+use esp_idf_sys::gpio_get_level;
 use crate::logger::log;
-use crate::queue::{EVT_ND1, QUEUE};
-use std::ffi::CString;
-use std::ptr;
 use std::sync::atomic::Ordering;
 
 use crate::pattern::pattern_get;
