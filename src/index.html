@@ -55,10 +55,16 @@
               <div class="stat-value" id="current-row">0</div>
               <div class="stat-label">Текущая строка</div>
             </div>
-            <div class="stat-item">
-              <div class="stat-value" id="current-column">0</div>
-              <div class="stat-label">Текущий столбец</div>
-            </div>
+              <div class="stat-item">
+                <div class="stat-value" id="current-column">0</div>
+                <div class="stat-label">Позиция иглы</div>
+                <div class="stat-hint" style="font-size: 0.8em; color: #666;">(-100..+100)</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-value" id="pattern-column">0</div>
+                <div class="stat-label">Столбец в узоре</div>
+                <div class="stat-hint" style="font-size: 0.8em; color: #666;">(0..50)</div>
+              </div>
             <div class="stat-item">
               <div class="stat-value" id="total-rows">0</div>
               <div class="stat-label">Всего строк</div>
@@ -324,37 +330,42 @@
   }
 
   // --- ОБНОВЛЕНИЕ СТАТУСА ---
-  function updateStatus() {
-    fetch("/knitting_status")
-      .then((response) => response.json())
-      .then((data) => {
-        currentRow = data.currentRow;
-        currentColumn = data.currentColumn;
-        totalRows = data.totalRows;
-        totalColumns = data.totalColumns;
-        isKnitting = data.isKnitting;
+function updateStatus() {
+  fetch("/knitting_status")
+    .then((response) => response.json())
+    .then((data) => {
+      currentRow = data.currentRow;
+      currentColumn = data.currentColumn;      // логическая координата (-50..+50)
+      const patternColumn = data.patternColumn; // индекс в паттерне (0..99)
+      totalRows = data.totalRows;
+      totalColumns = data.totalColumns;
+      isKnitting = data.isKnitting;
 
-        const progress = totalRows > 0 ? (currentRow / totalRows) * 100 : 0;
-        document.getElementById("progress-bar").style.width =
-          `${Math.min(progress, 100)}%`;
+      const progress = totalRows > 0 ? (currentRow / totalRows) * 100 : 0;
+      document.getElementById("progress-bar").style.width =
+        `${Math.min(progress, 100)}%`;
 
-        document.getElementById("current-row").textContent = currentRow;
-        document.getElementById("current-column").textContent = currentColumn;
-        document.getElementById("total-rows").textContent = totalRows;
-        document.getElementById("total-columns").textContent = totalColumns;
+      document.getElementById("current-row").textContent = currentRow;
+      document.getElementById("current-column").textContent = 
+        currentColumn;  // показываем как есть: -12, 0, +45
+      document.getElementById("pattern-column").textContent = 
+        patternColumn >= 0 ? patternColumn : "—";  // "—" если вне зоны
+      document.getElementById("total-rows").textContent = totalRows;
+      document.getElementById("total-columns").textContent = totalColumns;
 
-        updateControlButton();
-        saveStateToStorage({
-          isKnitting: isKnitting,
-          currentRow: currentRow,
-          currentColumn: currentColumn,
-          totalRows: totalRows,
-          totalColumns: totalColumns,
-          timestamp: Date.now(),
-        });
-      })
-      .catch((error) => console.error("Error fetching status:", error));
-  }
+      updateControlButton();
+      saveStateToStorage({
+        isKnitting: isKnitting,
+        currentRow: currentRow,
+        currentColumn: currentColumn,
+        patternColumn: patternColumn,  // сохраняем и это
+        totalRows: totalRows,
+        totalColumns: totalColumns,
+        timestamp: Date.now(),
+      });
+    })
+    .catch((error) => console.error("Error fetching status:", error));
+}
 
   // --- ОБНОВЛЕНИЕ СИГНАЛОВ ---
   function updateSignalStatus() {
@@ -419,7 +430,12 @@
             }
           });
         });
-
+        const currentIndex = currentRow * cols + patternColumn;  // вместо currentColumn!
+        if (currentIndex >= 0 && currentIndex < cells.length && patternColumn >= 0) {
+          cells[currentIndex].style.borderColor = "#e77e6d";
+          cells[currentIndex].style.borderWidth = "2px";
+          cells[currentIndex].style.boxShadow = "0 0 8px rgba(231, 126, 109, 0.6)";
+        }
         if (
           document
             .getElementById("pattern-tab")

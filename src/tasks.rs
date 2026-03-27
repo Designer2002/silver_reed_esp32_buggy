@@ -12,8 +12,6 @@ use log::info;
 pub extern "C" fn engine_task(_: *mut c_void) {
     info!("Engine task started");
 
-    let mut row = 0;
-
     loop {
         let evt = QUEUE.recv_front(1u32);
 
@@ -23,17 +21,13 @@ pub extern "C" fn engine_task(_: *mut c_void) {
                     on_ccp_tick_fast();
                 }
 
-                // EVT_ND1 => {
-                //     on_nd1_falling_fast();
-                // }
+                EVT_ND1 => {
+                    on_nd1_falling_fast();
+                }
 
                 EVT_KSL => {
                     let level = unsafe { esp_idf_sys::gpio_get_level(KSL) };
                     on_ksl_change(level == 1);
-
-                    row += 1;
-                    let msg = format!("KSL change detected, row updated to {}", row);
-                    log("DEBUG", Box::leak(msg.into_boxed_str()));
                 }
 
                 EVT_HOK => {

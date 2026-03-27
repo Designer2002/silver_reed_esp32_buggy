@@ -118,19 +118,43 @@ pub fn init_server(server: &mut EspHttpServer) -> anyhow::Result<()> {
     })?;
 
     // Статус вязания
-    server.fn_handler("/knitting_status", Method::Get, |_req| -> anyhow::Result<()> {
-        let response_json = format!(
-            r#"{{"currentRow": {}, "currentColumn": {}, "totalRows": {}, "totalColumns": {}, "isKnitting": {}}}"#,
-            ROW.load(std::sync::atomic::Ordering::Relaxed),
-            NEEDLE.load(std::sync::atomic::Ordering::Relaxed),
-            HEIGHT.load(std::sync::atomic::Ordering::Relaxed),
-            WIDTH.load(std::sync::atomic::Ordering::Relaxed),
-            KNITTING.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        let mut resp = _req.into_ok_response()?;
-        resp.write_all(response_json.as_bytes())?;
-        Ok(())
-    })?;
+server.fn_handler("/knitting_status", Method::Get, |_req| -> anyhow::Result<()> {
+    let row = ROW.load(std::sync::atomic::Ordering::Relaxed);
+    let needle = NEEDLE.load(std::sync::atomic::Ordering::Relaxed);
+    let width = WIDTH.load(std::sync::atomic::Ordering::Relaxed);
+    let height = HEIGHT.load(std::sync::atomic::Ordering::Relaxed);
+    let is_knitting = KNITTING.load(std::sync::atomic::Ordering::Relaxed);
+    
+    // Расчёт столбца в паттерне (0..width-1) из центрированной координаты
+    // Система: ...3,2,1,-1,-2,-3... (без нуля)
+    let half = (width / 2) as i32;
+    let pattern_column = if needle > 0 {
+        half - needle
+    } else {
+        half - needle - 1  // "прыжок" через отсутствующий ноль
+    };
+    
+    // Ограничиваем валидным диапазоном для отображения
+    let pattern_column_display = if pattern_column >= 0 && pattern_column < width as i32 {
+        pattern_column
+    } else {
+        -1  // вне зоны узора
+    };
+
+    let response_json = format!(
+        r#"{{"currentRow": {}, "currentColumn": {}, "patternColumn": {}, "totalRows": {}, "totalColumns": {}, "isKnitting": {}}}"#,
+        row,
+        needle,           // логическая координата: -50..+50
+        pattern_column_display,  // индекс в паттерне: 0..99
+        height,
+        width,
+        is_knitting
+    );
+    
+    let mut resp = _req.into_ok_response()?;
+    resp.write_all(response_json.as_bytes())?;
+    Ok(())
+})?;
 
     Ok(())
 }

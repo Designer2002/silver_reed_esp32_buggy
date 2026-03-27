@@ -1,4 +1,3 @@
-use esp_idf_sys::gpio_int_type_t_GPIO_INTR_NEGEDGE;
 
 use crate::{queue::{EVT_CCP, EVT_HOK, EVT_KSL, EVT_ND1, QUEUE}, state::{CCP, HOK, KSL, ND1}};
 
@@ -20,9 +19,9 @@ extern "C" fn hok_isr(_: *mut core::ffi::c_void) {
 
 pub fn install_isrs() {
     unsafe {
-        esp_idf_sys::gpio_set_intr_type(CCP, esp_idf_sys::gpio_int_type_t_GPIO_INTR_POSEDGE);
-        esp_idf_sys::gpio_set_intr_type(ND1, gpio_int_type_t_GPIO_INTR_NEGEDGE);
-        esp_idf_sys::gpio_set_intr_type(KSL, esp_idf_sys::gpio_int_type_t_GPIO_INTR_NEGEDGE);
+        esp_idf_sys::gpio_set_intr_type(CCP, esp_idf_sys::gpio_int_type_t_GPIO_INTR_ANYEDGE);
+        esp_idf_sys::gpio_set_intr_type(ND1, esp_idf_sys::gpio_int_type_t_GPIO_INTR_ANYEDGE);
+        esp_idf_sys::gpio_set_intr_type(KSL, esp_idf_sys::gpio_int_type_t_GPIO_INTR_ANYEDGE);
         esp_idf_sys::gpio_set_intr_type(HOK, esp_idf_sys::gpio_int_type_t_GPIO_INTR_ANYEDGE);
 
         esp_idf_sys::gpio_isr_handler_add(CCP, Some(ccp_isr), core::ptr::null_mut());
