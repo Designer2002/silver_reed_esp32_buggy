@@ -1,9 +1,45 @@
 use crate::logger::log;
-use esp_idf_hal::delay::Ets;
-use std::sync::atomic::Ordering;
-
 use crate::pattern::pattern_get;
 use crate::state::*;
+use crate::tasks::delay_us;
+use esp_idf_sys::GPIO;
+use std::sync::atomic::Ordering;
+
+#[inline(always)]
+fn dob_set_if_changed(new_state: bool) {
+    let last = DOB_LAST_STATE.load(Ordering::Relaxed);
+
+    // Пишем в регистр ТОЛЬКО если состояние изменилось
+    if new_state != last {
+        if new_state {
+            dob_set_high_fast();
+        } else {
+            dob_set_low_fast();
+        }
+        DOB_LAST_STATE.store(new_state, Ordering::Relaxed);
+    }
+}
+// ✅ Для ESP32 можно использовать прямые регистры для максимальной скорости
+#[inline(always)]
+fn dob_set_low_fast() {
+    unsafe {
+        // Прямая запись в регистр - быстрее чем gpio_set_level
+        (esp_idf_sys::GPIO_OUT_W1TC_REG as *mut u32).write_volatile(1 << DOB);
+        // log("INFO", "DOB: SOLENOID ON");
+    }
+}
+
+#[inline(always)]
+fn dob_set_high_fast() {
+    unsafe {
+        (esp_idf_sys::GPIO_OUT_W1TS_REG as *mut u32).write_volatile(1 << DOB);
+    }
+}
+
+#[inline(always)]
+fn is_ccp_before_ksl(ccp_seq: u32, ksl_seq: u32) -> bool {
+    ccp_seq < ksl_seq
+}
 
 pub fn get_pin_state_json() -> String {
     let mut ccp_state = 0;
@@ -43,9 +79,9 @@ pub fn init_pins() {
         esp_idf_sys::gpio_set_direction(ND1, esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT);
         esp_idf_sys::gpio_set_direction(DOB, esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT);
 
+        // ✅ DOB по умолчанию HIGH (соленоид выключен)
         esp_idf_sys::gpio_set_level(DOB, 1);
 
-        // // Включаем подтяжку для входов, чтобы избежать "плавающего" состояния
         esp_idf_sys::gpio_pullup_en(CCP);
         esp_idf_sys::gpio_pullup_en(HOK);
         esp_idf_sys::gpio_pullup_en(KSL);
@@ -53,97 +89,138 @@ pub fn init_pins() {
     }
 }
 
-pub fn gpio_set_low(pin: i32) {
-    unsafe {
-        esp_idf_sys::gpio_set_level(pin, 0);
-    }
-}
-
-pub fn gpio_set_high(pin: i32) {
-    unsafe {
-        esp_idf_sys::gpio_set_level(pin, 1);
-    }
-}
-
 #[inline(always)]
-pub fn dob_fire_fast() {
-    log("DEBUG", "DOB changed!");
-    gpio_set_low(DOB);
-    Ets::delay_us(3);
-    gpio_set_high(DOB);
-}
-#[inline(always)]
-pub fn on_ksl_change(level: bool) {
-    if level {
-        INSIDE_PATTERN.store(true, Ordering::Relaxed);
-        log("DEBUG", "Entered pattern zone");
-
-        let dir = DIR_RIGHT.load(Ordering::Relaxed);
-        let width = WIDTH.load(Ordering::Relaxed);
-        let half = (width / 2) as i32;
-
-        if dir {
-            // Движение вправо: вход с левой границы = игла +half
-            NEEDLE.store(half, Ordering::Relaxed);
-            log("DEBUG", <String as Clone>::clone(&(&format!("Needle reset to +{} (RIGHT)", half))).leak());
+pub fn on_ksl_change(_seq: u32) {
+    // ✅ Читаем АКТУАЛЬНОЕ состояние KSL прямо из регистра
+    // Это важно потому что ISR мог отфильтровать дребезг
+    let ksl_state = unsafe { (GPIO.in_ >> KSL) & 0x1 } != 0;
+    
+    let old_inside = INSIDE_PATTERN.load(Ordering::Relaxed);
+    
+    // ✅ Обрабатываем только если состояние действительно изменилось
+    if old_inside != ksl_state {
+        INSIDE_PATTERN.store(ksl_state, Ordering::Relaxed);
+        
+        if ksl_state {
+            // Вход в зону паттерна (KSL rise: false → true)
+            if DIR_RIGHT.load(Ordering::Relaxed) {
+                NEEDLE.store(PATTERN_START.load(Ordering::Relaxed), Ordering::Relaxed);
+            } else {
+                NEEDLE.store(PATTERN_END.load(Ordering::Relaxed), Ordering::Relaxed);
+            }
         } else {
-            // Движение влево: вход с правой границы = игла -half
-            NEEDLE.store(-half, Ordering::Relaxed);
-            log("DEBUG", <String as Clone>::clone(&(&format!("Needle reset to {} (LEFT)", -half))).leak());
+            // Выход из зоны паттерна (KSL fall: true → false)
+            if DIR_RIGHT.load(Ordering::Relaxed) {
+                PATTERN_END.store(
+                    NEEDLE.load(Ordering::Relaxed).saturating_sub(1),
+                    Ordering::Relaxed,
+                );
+            } else {
+                PATTERN_START.store(
+                    0,
+                    Ordering::Relaxed,
+                );
+            }
+            
+            ROW.fetch_add(1, Ordering::SeqCst);    
+            dob_set_high_fast();
         }
-    } else {
-        INSIDE_PATTERN.store(false, Ordering::Relaxed);
-        log("DEBUG", "Exited pattern zone");
     }
 }
 
 #[inline(always)]
-pub fn on_ccp_tick_fast() {
-    if !KNITTING.load(Ordering::Relaxed) || !INSIDE_PATTERN.load(Ordering::Relaxed) {
+pub fn on_ccp_tick_fast(ccp_seq: u32) {
+    // ✅ Проверяем INSIDE_PATTERN здесь, до обработки
+    let inside = INSIDE_PATTERN.load(Ordering::Relaxed);
+    let ksl_seq = LAST_KSL_SEQUENCE.load(Ordering::SeqCst);
+    
+    // ✅ Игнорируем CCP если он был ДО или во время последнего KSL fall
+    // Это "хвостовые" тики от предыдущего ряда
+    if ccp_seq <= ksl_seq {
+        dob_set_high_fast();
         return;
     }
-
-    let needle = NEEDLE.load(Ordering::Relaxed);
-    let row = ROW.load(Ordering::Relaxed);
-    let width = WIDTH.load(Ordering::Relaxed);
-    let half = (width / 2) as i32;
-
-    // Конвертация с учётом отсутствия иглы "0"
-    let pattern_index = if needle > 0 {
-        half - needle
-    } else {
-        half - needle - 1  // прыжок через отсутствующий ноль
-    };
-
-    // Проверка границ и триггер
-    if pattern_index >= 0 && pattern_index < width as i32 {
-        if pattern_get(row, pattern_index as i32) {
-            dob_fire_fast();
+    
+    if inside {
+        // ✅ CCP тик — это уже rising edge, просто считаем иглу
+        if DIR_RIGHT.load(Ordering::Relaxed) {
+            NEEDLE.fetch_add(1, Ordering::Relaxed);
+        } else {
+            NEEDLE.fetch_sub(1, Ordering::Relaxed);
         }
-    }
-
-    if DIR_RIGHT.load(Ordering::Relaxed) {
-        NEEDLE.fetch_sub(1, Ordering::Relaxed);  // уменьшаем
+        let row = ROW.load(Ordering::Relaxed);
+        let needle = NEEDLE.load(Ordering::Relaxed);
+        
+        // ✅ Инвертируем полярность DOB для правильного контраста
+        // . (точка) = фон, # (решетка) = узор
+        let should_fire = pattern_get(row, needle);
+        if !should_fire {
+            dob_set_low_fast(); // Соленоид включается для узора
+        } else {
+            dob_set_high_fast(); // Соленоид выключен для фона
+        }
     } else {
-        NEEDLE.fetch_add(1, Ordering::Relaxed);   // увеличиваем
+        dob_set_high_fast();
     }
 }
 
 #[inline(always)]
 pub fn on_hok_change_fast(level: bool) {
-    DIR_RIGHT.store(level, Ordering::Relaxed);
-    if level {
-        log("DEBUG", "Direction updated to RIGHT");
-        ROW.fetch_add(1, Ordering::Relaxed);
+    // Пропускаем, если уровень не изменился (защита от дребезга)
+    let last = HOK_LAST_LEVEL.load(Ordering::Relaxed);
+    if level == last {
+        return;
+    }
+    HOK_LAST_LEVEL.store(level, Ordering::Relaxed);
+
+    let dir = level;
+    DIR_RIGHT.store(dir, Ordering::Relaxed);
+
+    if dir {
+        log("DEBUG", "HOK: direction RIGHT");
     } else {
-        log("DEBUG", "Direction updated to LEFT");
-        ROW.fetch_add(1, Ordering::Relaxed);
+        log("DEBUG", "HOK: direction LEFT");
     }
 }
 
 pub fn on_nd1_falling_fast() {
-    if DIR_RIGHT.load(Ordering::Relaxed) && NEEDLE.load(Ordering::Relaxed) != -1 {
-        NEEDLE.store(-1, Ordering::Relaxed);
-        log("DEBUG", "ND1 falling edge detected, needle reset");
+    let width = WIDTH.load(Ordering::Relaxed) as i32;
+
+    if DIR_RIGHT.load(Ordering::Relaxed) {
+        NEEDLE.store(0, Ordering::Relaxed);
+        log("DEBUG", "ND1: reset needle to 0 (RIGHT)");
+    } else {
+        NEEDLE.store(width - 1, Ordering::Relaxed);
+        let msg = format!("ND1: reset needle to {} (LEFT)", width - 1).leak();
+        log("DEBUG", msg);
     }
+
+    // ✅ На ND1 тоже выключаем соленоид для безопасности
+    dob_set_high_fast();
+}
+
+pub fn handshake() {
+    send_byte_sync(b'P');
+    send_byte_sync(b'A');
+    send_byte_sync(0);
+    send_byte_sync(0);
+}
+
+fn send_byte_sync(byte: u8) {
+    dob_set_high_fast();
+    for i in 0..8 {
+        let bit = (byte >> i) & 1 != 0;
+        send_bit(bit);
+    }
+
+    dob_set_high_fast();
+}
+
+fn send_bit(bit: bool) {
+    if !bit {
+        dob_set_high_fast();
+    } else {
+        dob_set_low_fast();
+    }
+    delay_us(FREQUENCY_SILVER_REED);
 }

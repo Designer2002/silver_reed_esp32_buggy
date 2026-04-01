@@ -1,6 +1,9 @@
+use std::sync::atomic::Ordering;
+use esp_idf_sys::{ESP_OK, esp_http_client, esp_http_client_cleanup, esp_http_client_config_t, esp_http_client_init, esp_http_client_perform};
+use local_ip_address::local_ip;
 use crate::gpio::get_pin_state_json;
 use crate::pattern::KNITTING_PATTERN;
-use crate::state::{HEIGHT, KNITTING, NEEDLE, ROW, WIDTH};
+use crate::state::{HEIGHT, INSIDE_PATTERN, KNITTING, NEEDLE, ROW, WIDTH};
 use crate::tasks::{start_knitting, stop_knitting};
 use crate::logger::{get_logs};
 use anyhow::Ok;
@@ -11,6 +14,7 @@ use esp_idf_svc::{
     wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi},
 };
 use log::info;
+use crate::logger::log;
 
 const SSID: &str = dotenvy_macro::dotenv!("WIFI_SSID");
 const PASS: &str = dotenvy_macro::dotenv!("WIFI_PASS");
@@ -119,36 +123,21 @@ pub fn init_server(server: &mut EspHttpServer) -> anyhow::Result<()> {
 
     // Статус вязания
 server.fn_handler("/knitting_status", Method::Get, |_req| -> anyhow::Result<()> {
-    let row = ROW.load(std::sync::atomic::Ordering::Relaxed);
-    let needle = NEEDLE.load(std::sync::atomic::Ordering::Relaxed);
-    let width = WIDTH.load(std::sync::atomic::Ordering::Relaxed);
-    let height = HEIGHT.load(std::sync::atomic::Ordering::Relaxed);
-    let is_knitting = KNITTING.load(std::sync::atomic::Ordering::Relaxed);
-    
-    // Расчёт столбца в паттерне (0..width-1) из центрированной координаты
-    // Система: ...3,2,1,-1,-2,-3... (без нуля)
-    let half = (width / 2) as i32;
-    let pattern_column = if needle > 0 {
-        half - needle
-    } else {
-        half - needle - 1  // "прыжок" через отсутствующий ноль
-    };
-    
-    // Ограничиваем валидным диапазоном для отображения
-    let pattern_column_display = if pattern_column >= 0 && pattern_column < width as i32 {
-        pattern_column
-    } else {
-        -1  // вне зоны узора
-    };
+    let row = ROW.load(Ordering::Relaxed);
+    let needle = NEEDLE.load(Ordering::Relaxed);
+    let width = WIDTH.load(Ordering::Relaxed);
+    let height = HEIGHT.load(Ordering::Relaxed);
+    let is_knitting = KNITTING.load(Ordering::Relaxed);
+    let inside = INSIDE_PATTERN.load(Ordering::Relaxed);
 
     let response_json = format!(
-        r#"{{"currentRow": {}, "currentColumn": {}, "patternColumn": {}, "totalRows": {}, "totalColumns": {}, "isKnitting": {}}}"#,
+        r#"{{"currentRow": {}, "currentColumn": {}, "totalRows": {}, "totalColumns": {}, "isKnitting": {}, "insidePattern": {}}}"#,
         row,
-        needle,           // логическая координата: -50..+50
-        pattern_column_display,  // индекс в паттерне: 0..99
+        needle,
         height,
         width,
-        is_knitting
+        is_knitting,
+        inside
     );
     
     let mut resp = _req.into_ok_response()?;
@@ -157,4 +146,24 @@ server.fn_handler("/knitting_status", Method::Get, |_req| -> anyhow::Result<()> 
 })?;
 
     Ok(())
+}
+
+pub unsafe fn create_client() -> *mut esp_http_client{
+    let my_local_ip = local_ip().unwrap();
+    let mut client_config: esp_http_client_config_t = esp_http_client_config_t::default();
+    client_config.host = my_local_ip.to_string().as_ptr() as *const u8;
+    client_config.port =6666;
+    let client = esp_http_client_init(&client_config);
+    let err = esp_http_client_perform(client);
+    if err != ESP_OK {
+        let msg = Box::leak(Box::new(format!("HTTP client perform failed with error code: {}", err)));
+        log("ERROR", msg);
+    }
+    client
+}
+
+pub fn cleanup_client(client: *mut esp_http_client) {
+    unsafe {
+        esp_http_client_cleanup(client);
+    }
 }

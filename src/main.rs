@@ -10,7 +10,7 @@ use esp_idf_sys::{esp_wifi_set_ps, gpio_install_isr_service, link_patches, wifi_
 use log::info;
 
 use crate::{
-    gpio::init_pins, isr::install_isrs, pattern::PATTERN, state::{HEIGHT, WIDTH}, tasks::{engine_task, init_knitter, logger_task}, web::connect_wifi
+    gpio::init_pins, pattern::PATTERN, state::{HEIGHT, WIDTH}, tasks::{engine_task, init_knitter, logger_task}, web::connect_wifi
 };
 use core::sync::atomic::Ordering;
 use std::ptr::null_mut;

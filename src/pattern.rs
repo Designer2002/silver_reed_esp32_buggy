@@ -9,11 +9,11 @@ pub struct KnitPattern {
 }
 
 pub fn pattern_get(row: i32, needle: i32) -> bool {
-    if row < 0 || needle < 0 {
-        return false;
-    }
+    // if row < 0 || needle < 0 {
+    //     return false;
+    // }
     let pattern = &*PATTERN;
-    if row >= pattern.height as i32 || needle >= pattern.width as i32 {
+    if row >= pattern.height as i32 || needle >= pattern.width as i32 || needle < 0 {
         return false;
     }
     pattern.rows[row as usize][needle as usize]
@@ -25,7 +25,7 @@ pub fn parse_pattern(pattern: &str) -> KnitPattern {
         .map(|line| {
             line.chars()
                 .filter(|&c| c != '\\' && c != '\n' && c != 'n') // Убираем символы переноса строки и возврата каретки`)
-                .map(|c| c == '#')
+                .map(|c| c == '.')
                 .collect()
         })
         .collect();

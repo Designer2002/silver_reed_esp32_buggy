@@ -3,8 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>🌸 Вязальная машина ESP32 🌸</title>
+    <title>🌸 Вязальная машина Silver Reed + ESP32 🌸</title>
     <link rel="stylesheet" href="/style.css" />
+    <style>
+      /* Стили для паттерна */
+      .pattern-grid {
+        display: grid;
+        gap: 2px;
+        margin: 20px 0;
+      }
+      .pattern-cell {
+        width: 20px;
+        height: 20px;
+        background: #f0f0f0;
+        border: 1px solid #ddd;
+        border-radius: 2px;
+      }
+      .pattern-cell.active {
+        background: #ff9a9e;
+        border-color: #ff6b7a;
+      }
+    </style>
   </head>
   <body>
     <div class="container">
@@ -50,45 +69,36 @@
             <div class="progress-bar" id="progress-bar"></div>
           </div>
 
+          <!-- ✅ УПРОЩЕНО: Только 3 поля вместо 5 -->
           <div class="stats-grid">
             <div class="stat-item">
               <div class="stat-value" id="current-row">0</div>
               <div class="stat-label">Текущая строка</div>
             </div>
-              <div class="stat-item">
-                <div class="stat-value" id="current-column">0</div>
-                <div class="stat-label">Позиция иглы</div>
-                <div class="stat-hint" style="font-size: 0.8em; color: #666;">(-100..+100)</div>
-              </div>
-              <div class="stat-item">
-                <div class="stat-value" id="pattern-column">0</div>
-                <div class="stat-label">Столбец в узоре</div>
-                <div class="stat-hint" style="font-size: 0.8em; color: #666;">(0..50)</div>
-              </div>
             <div class="stat-item">
               <div class="stat-value" id="total-rows">0</div>
-              <div class="stat-label">Всего строк</div>
+              <div class="stat-label">Всего рядов</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="current-column">0</div>
+              <div class="stat-label">Игла в узоре</div>
+              <div class="stat-hint" style="font-size: 0.8em; color: #666;">(только KSL=HIGH)</div>
             </div>
             <div class="stat-item">
               <div class="stat-value" id="total-columns">0</div>
-              <div class="stat-label">Всего столбцов</div>
+              <div class="stat-label">Ширина узора</div>
             </div>
           </div>
 
           <div class="info-box">
             <p>💡 <strong>Инструкция:</strong></p>
-            <p>
-              1. Подключите все пины согласно схеме: CCP, HOK, KSL, ND1, DOB
-            </p>
-            <p>2. Нажмите "Запустить вязание" для начала процесса</p>
-            <p>3. Следите за прогрессом и состоянием сигналов</p>
+            <p>1. Установите KSL-датчики на границы рабочей зоны</p>
+            <p>2. Нажмите "Запустить вязание"</p>
+            <p>3. Счётчик игл работает только когда KSL=HIGH</p>
           </div>
 
           <div class="btn-group">
-            <button
-              class="btn btn-success control-btn"
-              onclick="toggleKnitting()"
-            >
+            <button class="btn btn-success control-btn" onclick="toggleKnitting()">
               ▶️ Запустить вязание
             </button>
           </div>
@@ -102,14 +112,8 @@
 
           <div class="info-box">
             <p>📝 <strong>Правила:</strong></p>
-            <p>
-              • <span style="color: #ff9a9e; font-weight: bold">#</span> =
-              активировать соленоид (1)
-            </p>
-            <p>
-              • <span style="color: #ddd; font-weight: bold">.</span> = не
-              активировать соленоид (0)
-            </p>
+            <p>• <span style="color: #ff9a9e; font-weight: bold">#</span> = активировать соленоид</p>
+            <p>• <span style="color: #ddd; font-weight: bold">.</span> = не активировать</p>
           </div>
 
           <div class="pattern-container">
@@ -117,455 +121,295 @@
           </div>
 
           <div class="btn-group">
-            <button
-              class="btn btn-success control-btn"
-              onclick="toggleKnitting()"
-            >
+            <button class="btn btn-success control-btn" onclick="toggleKnitting()">
               ▶️ Запустить вязание
             </button>
           </div>
         </div>
-        </div>
       </div>
 
-      <!-- Логи вкладка -->
       <!-- Логи вкладка -->
       <div id="logs-tab" class="tab-content">
         <div class="card">
           <h2>📝 Логи вязания</h2>
-
           <div class="info-box">
-            <p>🔍 <strong>Важно:</strong></p>
-            <p>• Все события вязания записываются в реальном времени</p>
-            <p>• Логи обновляются автоматически</p>
+            <p>🔍 Логи обновляются автоматически</p>
           </div>
-
-          <div
-            class="card"
-            style="
-              background: #f8f9fa;
-              margin-top: 20px;
-              height: 300px;
-              overflow-y: auto;
-              border-radius: 10px;
-            "
-          >
+          <div class="card" style="background: #f8f9fa; margin-top: 20px; height: 300px; overflow-y: auto; border-radius: 10px;">
             <div id="logs-container" class="log-container"></div>
           </div>
         </div>
       </div>
 
       <div class="footer">
-        <p>
-          ESP32 Knitting Machine Controller v2.0 | IP:
-          <span id="device-ip">-</span>
-        </p>
+        <p>ESP32 Knitting Machine Controller v2.0 | IP: <span id="device-ip">-</span></p>
         <p>🌸 Создано с любовью для вязания 🌸</p>
       </div>
     </div>
 
-   <script>
-  // --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
-  let isKnitting = false;
-  let currentRow = 0;
-  let currentColumn = 0;
-  let totalRows = 0;
-  let totalColumns = 0;
-  let patternGrid = null;
+    <script>
+      // --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
+      let isKnitting = false;
+      let currentRow = 0;
+      let currentColumn = 0;      // 0..width-1 (только внутри KSL)
+      let insidePattern = false;  // KSL статус
+      let totalRows = 0;
+      let totalColumns = 0;
+      let patternGrid = null;
 
-  // Интервалы
-  let statusIntervalId = null;
-  let signalIntervalId = null;
-  let patternIntervalId = null;
-  let logsIntervalId = null;
+      let statusIntervalId = null;
+      let signalIntervalId = null;
+      let patternIntervalId = null;
+      let logsIntervalId = null;
 
-  // --- КОНСТАНТЫ ---
-  const STATE_STORAGE_KEY = "knitting_state"; // Только для состояния вязания
+      const STATE_STORAGE_KEY = "knitting_state";
 
-  // --- ФУНКЦИИ УПРАВЛЕНИЯ ---
-  function toggleKnitting() {
-    if (isKnitting) {
-      stopKnitting();
-    } else {
-      startKnitting();
-    }
-  }
+      function toggleKnitting() {
+        if (isKnitting) { stopKnitting(); } else { startKnitting(); }
+      }
 
-  function startKnitting() {
-    fetch("/start_knitting", { method: "POST" })
-      .then((response) => response.text())
-      .then((data) => {
-        if (data === "OK") {
-          isKnitting = true;
-          updateControlButton();
-          saveStateToStorage({
-            isKnitting: true,
-            currentRow: currentRow,
-            currentColumn: currentColumn,
-            totalRows: totalRows,
-            totalColumns: totalColumns,
-            timestamp: Date.now(),
-          });
-          console.log("Вязание запущено.");
-        } else {
-          console.error("Ошибка запуска вязания:", data);
-        }
-      })
-      .catch((error) => console.error("Error:", error));
-  }
+      function startKnitting() {
+        fetch("/start_knitting", { method: "POST" })
+          .then(r => r.text())
+          .then(data => {
+            if (data === "OK") {
+              isKnitting = true;
+              updateControlButton();
+              saveStateToStorage({ isKnitting: true, currentRow, currentColumn, totalRows, totalColumns, timestamp: Date.now() });
+            }
+          })
+          .catch(err => console.error("Error:", err));
+      }
 
-  function stopKnitting() {
-    fetch("/stop_knitting", { method: "POST" })
-      .then((response) => response.text())
-      .then((data) => {
-        if (data === "OK") {
-          isKnitting = false;
-          updateControlButton();
-          saveStateToStorage({
-            isKnitting: false,
-            currentRow: currentRow,
-            currentColumn: currentColumn,
-            totalRows: totalRows,
-            totalColumns: totalColumns,
-            timestamp: Date.now(),
-          });
-          console.log("Вязание остановлено.");
-        } else {
-          console.error("Ошибка остановки вязания:", data);
-        }
-      })
-      .catch((error) => console.error("Error:", error));
-  }
+      function stopKnitting() {
+        fetch("/stop_knitting", { method: "POST" })
+          .then(r => r.text())
+          .then(data => {
+            if (data === "OK") {
+              isKnitting = false;
+              updateControlButton();
+              saveStateToStorage({ isKnitting: false, currentRow, currentColumn, totalRows, totalColumns, timestamp: Date.now() });
+            }
+          })
+          .catch(err => console.error("Error:", err));
+      }
 
-  function updateControlButton() {
-    const btns = document.getElementsByClassName("control-btn");
-    
+      function updateControlButton() {
+        const btns = document.getElementsByClassName("control-btn");
         for (let btn of btns) {
-      if (isKnitting) {
-        btn.textContent = "⏸️ Остановить вязание";
-        btn.onclick = stopKnitting;
-      } else {
-        btn.textContent = "▶️ Запустить вязание";
-        btn.onclick = startKnitting;
-      }
-    }
-  }
-
-  // --- ПЕРЕКЛЮЧЕНИЕ ВКЛАДОК ---
-  function switchTab(tabName) {
-    // Остановить интервалы
-    if (statusIntervalId) clearInterval(statusIntervalId);
-    if (signalIntervalId) clearInterval(signalIntervalId);
-    if (patternIntervalId) clearInterval(patternIntervalId);
-    if (logsIntervalId) clearInterval(logsIntervalId);
-
-    statusIntervalId = null;
-    signalIntervalId = null;
-    patternIntervalId = null;
-    logsIntervalId = null;
-
-    // Скрыть все вкладки
-    document.querySelectorAll(".tab-content").forEach((el) => {
-      el.classList.remove("active");
-    });
-    document.querySelectorAll(".nav-tab").forEach((el) => {
-      el.classList.remove("active");
-    });
-
-    // Показать выбранную вкладку
-    const targetTab = document.getElementById(`${tabName}-tab`);
-    if (targetTab) {
-      targetTab.classList.add("active");
-      document
-        .querySelector(`.nav-tab[onclick="switchTab('${tabName}')"]`)
-        .classList.add("active");
-
-      // Запустить интервалы для новой вкладки
-      if (tabName === "main") {
-        statusIntervalId = setInterval(updateStatus, 1000);
-        signalIntervalId = setInterval(updateSignalStatus, 500);
-      } else if (tabName === "pattern") {
-        updatePattern();
-      } else if (tabName === "logs") {
-        logsIntervalId = setInterval(fetchAndDisplayLogs, 2000);
-        fetchAndDisplayLogs(); // Загрузить сразу
-      }
-    }
-  }
-
-  // --- УПРАВЛЕНИЕ СОСТОЯНИЕМ ВЯЗАНИЯ ---
-  function loadStateFromStorage() {
-    try {
-      const storedJson = localStorage.getItem(STATE_STORAGE_KEY);
-      if (storedJson) {
-        const state = JSON.parse(storedJson);
-        if (state) {
-          console.log("Loaded state from storage:", state);
-          return state;
-        }
-      }
-      return null;
-    } catch (e) {
-      console.error("Error loading state from localStorage:", e);
-      return null;
-    }
-  }
-
-  function saveStateToStorage(state) {
-    try {
-      localStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(state));
-      console.log("Saved state to storage:", state);
-    } catch (e) {
-      console.error("Error saving state to localStorage:", e);
-    }
-  }
-
-  function clearStateFromStorage() {
-    try {
-      localStorage.removeItem(STATE_STORAGE_KEY);
-      console.log("Cleared state from storage.");
-    } catch (e) {
-      console.error("Error clearing state from localStorage:", e);
-    }
-  }
-
-  // --- ОБНОВЛЕНИЕ СТАТУСА ---
-function updateStatus() {
-  fetch("/knitting_status")
-    .then((response) => response.json())
-    .then((data) => {
-      currentRow = data.currentRow;
-      currentColumn = data.currentColumn;      // логическая координата (-50..+50)
-      const patternColumn = data.patternColumn; // индекс в паттерне (0..99)
-      totalRows = data.totalRows;
-      totalColumns = data.totalColumns;
-      isKnitting = data.isKnitting;
-
-      const progress = totalRows > 0 ? (currentRow / totalRows) * 100 : 0;
-      document.getElementById("progress-bar").style.width =
-        `${Math.min(progress, 100)}%`;
-
-      document.getElementById("current-row").textContent = currentRow;
-      document.getElementById("current-column").textContent = 
-        currentColumn;  // показываем как есть: -12, 0, +45
-      document.getElementById("pattern-column").textContent = 
-        patternColumn >= 0 ? patternColumn : "—";  // "—" если вне зоны
-      document.getElementById("total-rows").textContent = totalRows;
-      document.getElementById("total-columns").textContent = totalColumns;
-
-      updateControlButton();
-      saveStateToStorage({
-        isKnitting: isKnitting,
-        currentRow: currentRow,
-        currentColumn: currentColumn,
-        patternColumn: patternColumn,  // сохраняем и это
-        totalRows: totalRows,
-        totalColumns: totalColumns,
-        timestamp: Date.now(),
-      });
-    })
-    .catch((error) => console.error("Error fetching status:", error));
-}
-
-  // --- ОБНОВЛЕНИЕ СИГНАЛОВ ---
-  function updateSignalStatus() {
-    fetch("/signal_status")
-      .then((response) => response.json())
-      .then((data) => {
-        document.getElementById("ccp-value").textContent = data.ccp;
-        document.getElementById("hok-value").textContent = data.hok;
-        document.getElementById("ksl-value").textContent = data.ksl;
-        document.getElementById("nd1-value").textContent = data.nd1;
-        document.getElementById("dob-value").textContent = data.dob;
-      })
-      .catch((error) =>
-        console.error("Error fetching signal status:", error),
-      );
-  }
-
-  // --- ОБНОВЛЕНИЕ ПАТТЕРНА ---
-  function updatePattern() {
-    if (!patternGrid) {
-      patternGrid = document.getElementById("pattern-grid");
-      if (!patternGrid) {
-        console.error("Pattern grid element not found!");
-        return;
-      }
-    }
-
-    fetch("/pat.txt")
-      .then((response) => response.text())
-      .then((text) => {
-        const lines = text.split("\n").filter((line) => line.trim() !== "");
-        const rows = lines;
-        const cols = Math.max(...rows.map((r) => r.length), 0);
-
-        const totalCells = rows.length * cols;
-        const existingCells = patternGrid.querySelectorAll(".pattern-cell");
-        if (existingCells.length !== totalCells) {
-          patternGrid.innerHTML = "";
-          for (let i = 0; i < totalCells; i++) {
-            const cell = document.createElement("div");
-            cell.className = "pattern-cell";
-            patternGrid.appendChild(cell);
+          if (isKnitting) {
+            btn.textContent = "⏸️ Остановить вязание";
+            btn.onclick = stopKnitting;
+          } else {
+            btn.textContent = "▶️ Запустить вязание";
+            btn.onclick = startKnitting;
           }
         }
+      }
 
-        const cells = patternGrid.querySelectorAll(".pattern-cell");
+      function switchTab(tabName) {
+        if (statusIntervalId) clearInterval(statusIntervalId);
+        if (signalIntervalId) clearInterval(signalIntervalId);
+        if (patternIntervalId) clearInterval(patternIntervalId);
+        if (logsIntervalId) clearInterval(logsIntervalId);
 
-        rows.forEach((row, rowIndex) => {
-          row.split("").forEach((char, colIndex) => {
-            const index = rowIndex * cols + colIndex;
-            if (index < cells.length) {
-              if (
-                char === "#" ||
-                char === "@" ||
-                char === "X" ||
-                char === "x"
-              ) {
-                cells[index].classList.add("active");
-              } else {
-                cells[index].classList.remove("active");
+        document.querySelectorAll(".tab-content").forEach(el => el.classList.remove("active"));
+        document.querySelectorAll(".nav-tab").forEach(el => el.classList.remove("active"));
+
+        const targetTab = document.getElementById(`${tabName}-tab`);
+        if (targetTab) {
+          targetTab.classList.add("active");
+          document.querySelector(`.nav-tab[onclick="switchTab('${tabName}')"]`).classList.add("active");
+
+          if (tabName === "main") {
+            statusIntervalId = setInterval(updateStatus, 500);
+            signalIntervalId = setInterval(updateSignalStatus, 500);
+          } else if (tabName === "pattern") {
+            updatePattern();
+            patternIntervalId = setInterval(updatePattern, 500);
+          } else if (tabName === "logs") {
+            logsIntervalId = setInterval(fetchAndDisplayLogs, 2000);
+            fetchAndDisplayLogs();
+          }
+        }
+      }
+
+      function loadStateFromStorage() {
+        try {
+          const stored = localStorage.getItem(STATE_STORAGE_KEY);
+          return stored ? JSON.parse(stored) : null;
+        } catch (e) { return null; }
+      }
+
+      function saveStateToStorage(state) {
+        try { localStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+      }
+
+      // ✅ ОБНОВЛЕНИЕ СТАТУСА
+      function updateStatus() {
+        fetch("/knitting_status")
+          .then(r => r.json())
+          .then(data => {
+            currentRow = data.currentRow;
+            currentColumn = data.currentColumn;
+            insidePattern = data.insidePattern;
+            totalRows = data.totalRows;
+            totalColumns = data.totalColumns;
+            isKnitting = data.isKnitting;
+
+            const progress = totalRows > 0 ? (currentRow / totalRows) * 100 : 0;
+            document.getElementById("progress-bar").style.width = `${Math.min(progress, 100)}%`;
+
+            document.getElementById("current-row").textContent = currentRow;
+            
+            // ✅ Показываем иглу только внутри зоны
+            const colEl = document.getElementById("current-column");
+            if (insidePattern && currentColumn >= 0) {
+              colEl.textContent = currentColumn;
+              colEl.style.color = "#e77e6d";
+              colEl.style.fontWeight = "bold";
+            } else {
+              colEl.textContent = "—";
+              colEl.style.color = "#666";
+              colEl.style.fontWeight = "normal";
+            }
+            
+            document.getElementById("total-columns").textContent = totalColumns;
+            document.getElementById("total-rows").textContent = totalRows; 
+
+            updateControlButton();
+          })
+          .catch(err => console.error("Error fetching status:", err));
+      }
+
+      function updateSignalStatus() {
+        fetch("/signal_status")
+          .then(r => r.json())
+          .then(data => {
+            document.getElementById("ccp-value").textContent = data.ccp;
+            document.getElementById("hok-value").textContent = data.hok;
+            document.getElementById("ksl-value").textContent = data.ksl;
+            document.getElementById("nd1-value").textContent = data.nd1;
+            document.getElementById("dob-value").textContent = data.dob;
+          })
+          .catch(err => console.error("Error fetching signal status:", err));
+      }
+
+      // ✅ ОБНОВЛЕНИЕ ПАТТЕРНА
+      function updatePattern() {
+        if (!patternGrid) {
+          patternGrid = document.getElementById("pattern-grid");
+          if (!patternGrid) return;
+        }
+
+        fetch("/pat.txt")
+          .then(r => r.text())
+          .then(text => {
+            const lines = text.split("\n").filter(line => line.trim() !== "");
+            const rows = lines;
+            const cols = Math.max(...rows.map(r => r.length), 0);
+
+            const totalCells = rows.length * cols;
+            const existingCells = patternGrid.querySelectorAll(".pattern-cell");
+            
+            if (existingCells.length !== totalCells) {
+              patternGrid.innerHTML = "";
+              patternGrid.style.gridTemplateColumns = `repeat(${cols}, 20px)`;
+              for (let i = 0; i < totalCells; i++) {
+                const cell = document.createElement("div");
+                cell.className = "pattern-cell";
+                patternGrid.appendChild(cell);
               }
             }
+
+            const cells = patternGrid.querySelectorAll(".pattern-cell");
+
+            rows.forEach((row, rowIndex) => {
+              row.split("").forEach((char, colIndex) => {
+                const index = rowIndex * cols + colIndex;
+                if (index < cells.length) {
+                  cells[index].classList.toggle("active", ["#", "@", "X", "x"].includes(char));
+                }
+              });
+            });
+
+            // ✅ Подсветка текущей ячейки
+            cells.forEach(cell => {
+              cell.style.borderColor = "#ddd";
+              cell.style.borderWidth = "1px";
+              cell.style.boxShadow = "none";
+              cell.style.backgroundColor = "transparent";
+            });
+
+            if (insidePattern && currentColumn >= 0) {
+              const currentIndex = currentRow * cols + currentColumn;
+              if (currentIndex >= 0 && currentIndex < cells.length) {
+                cells[currentIndex].style.borderColor = "#e77e6d";
+                cells[currentIndex].style.borderWidth = "3px";
+                cells[currentIndex].style.boxShadow = "0 0 12px rgba(231, 126, 109, 0.8)";
+                cells[currentIndex].style.backgroundColor = "rgba(231, 126, 109, 0.2)";
+              }
+            }
+          })
+          .catch(err => console.error("Error fetching pattern:", err));
+      }
+
+      async function fetchAndDisplayLogs() {
+        const logsContainer = document.getElementById("logs-container");
+        if (!logsContainer) return;
+
+        try {
+          const response = await fetch("/logs");
+          const logsArray = await response.json();
+          logsContainer.innerHTML = "";
+
+          logsArray.forEach(entry => {
+            const div = document.createElement("div");
+            div.className = "log-entry";
+            div.innerHTML = `
+              <span class="log-timestamp">${entry.t}</span>
+              <span class="log-level log-level-${entry.lvl.toLowerCase()}">[${entry.lvl}]</span>
+              <span class="log-message">${entry.msg}</span>
+            `;
+            logsContainer.appendChild(div);
           });
+
+          logsContainer.scrollTop = logsContainer.scrollHeight;
+        } catch (err) {
+          console.error("Error fetching logs:", err);
+        }
+      }
+
+      window.onload = function () {
+        const saved = loadStateFromStorage();
+        if (saved) {
+          isKnitting = saved.isKnitting || false;
+          currentRow = saved.currentRow || 0;
+          currentColumn = saved.currentColumn || 0;
+          totalRows = saved.totalRows || 0;
+          totalColumns = saved.totalColumns || 0;
+
+          document.getElementById("current-row").textContent = currentRow;
+          document.getElementById("total-columns").textContent = totalColumns;
+          
+          const colEl = document.getElementById("current-column");
+          colEl.textContent = insidePattern ? currentColumn : "—";
+          colEl.style.color = insidePattern ? "#e77e6d" : "#666";
+
+          updateControlButton();
+        }
+
+        statusIntervalId = setInterval(updateStatus, 500);
+        signalIntervalId = setInterval(updateSignalStatus, 500);
+        updateStatus();
+        updateSignalStatus();
+      };
+
+      window.onbeforeunload = function () {
+        [statusIntervalId, signalIntervalId, patternIntervalId, logsIntervalId].forEach(id => {
+          if (id) clearInterval(id);
         });
-        const currentIndex = currentRow * cols + patternColumn;  // вместо currentColumn!
-        if (currentIndex >= 0 && currentIndex < cells.length && patternColumn >= 0) {
-          cells[currentIndex].style.borderColor = "#e77e6d";
-          cells[currentIndex].style.borderWidth = "2px";
-          cells[currentIndex].style.boxShadow = "0 0 8px rgba(231, 126, 109, 0.6)";
-        }
-        if (
-          document
-            .getElementById("pattern-tab")
-            .classList.contains("active")
-        ) {
-          cells.forEach((cell) => {
-            cell.style.borderColor = "#ddd";
-            cell.style.borderWidth = "1px";
-          });
-          const currentIndex = currentRow * cols + currentColumn;
-          if (currentIndex < cells.length) {
-            cells[currentIndex].style.borderColor = "#e77e6d";
-            cells[currentIndex].style.borderWidth = "2px";
-          }
-        }
-      })
-      .catch((error) => console.error("Error fetching pattern:", error));
-  }
-
-  // --- ОБНОВЛЕНИЕ ЛОГОВ (БЕЗ КЭШИРОВАНИЯ) ---
-  async function fetchAndDisplayLogs() {
-    const logsContainer = document.getElementById("logs-container");
-    if (!logsContainer) {
-      console.error("Logs container element '#logs-container' not found!");
-      if (logsIntervalId) {
-        clearInterval(logsIntervalId);
-        logsIntervalId = null;
-      }
-      return;
-    }
-
-    try {
-      const response = await fetch("/logs");
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      const logsArray = await response.json();
-
-      logsContainer.innerHTML = "";
-
-      logsArray.forEach((entry) => {
-        const logEntryDiv = document.createElement("div");
-        logEntryDiv.className = "log-entry";
-
-        const timeSpan = document.createElement("span");
-        timeSpan.className = "log-timestamp";
-        timeSpan.textContent = entry.t;
-        logEntryDiv.appendChild(timeSpan);
-
-        const levelSpan = document.createElement("span");
-        levelSpan.className = `log-level log-level-${entry.lvl.toLowerCase()}`;
-        levelSpan.textContent = `[${entry.lvl}] `; // ✅ Исправлено: entry.lvl вместо entry.l
-        logEntryDiv.appendChild(levelSpan);
-
-        const messageSpan = document.createElement("span");
-        messageSpan.className = "log-message";
-        messageSpan.textContent = entry.msg;
-        logEntryDiv.appendChild(messageSpan);
-
-        logsContainer.appendChild(logEntryDiv);
-      });
-
-      logsContainer.scrollTop = logsContainer.scrollHeight;
-    } catch (error) {
-      console.error("Error fetching or displaying logs:", error);
-      logsContainer.innerHTML = "";
-      const errorDiv = document.createElement("div");
-      errorDiv.className = "log-entry";
-      const errorLevelSpan = document.createElement("span");
-      errorLevelSpan.className = "log-level log-level-error";
-      errorLevelSpan.textContent = "[ERROR] ";
-      errorDiv.appendChild(errorLevelSpan);
-      const errorMessageSpan = document.createElement("span");
-      errorMessageSpan.className = "log-message";
-      errorMessageSpan.textContent = `Failed to load logs: ${error.message}`;
-      errorDiv.appendChild(errorMessageSpan);
-      logsContainer.appendChild(errorDiv);
-      logsContainer.scrollTop = logsContainer.scrollHeight;
-    }
-  }
-
-  function clearLogs() {
-    console.log("Clearing logs display.");
-    const logsContainer = document.getElementById("logs-container");
-    if (logsContainer) {
-      logsContainer.innerHTML = "";
-    }
-  }
-
-  // --- ИНИЦИАЛИЗАЦИЯ ПРИ ЗАГРУЗКЕ ---
-  window.onload = function () {
-    console.log("Interface loaded.");
-
-    // Загружаем состояние вязания из хранилища
-    const savedState = loadStateFromStorage();
-    if (savedState) {
-      console.log("Restoring state from storage:", savedState);
-      isKnitting = savedState.isKnitting || false;
-      currentRow = savedState.currentRow || 0;
-      currentColumn = savedState.currentColumn || 0;
-      totalRows = savedState.totalRows || 0;
-      totalColumns = savedState.totalColumns || 0;
-
-      document.getElementById("current-row").textContent = currentRow;
-      document.getElementById("current-column").textContent = currentColumn;
-      document.getElementById("total-rows").textContent = totalRows;
-      document.getElementById("total-columns").textContent = totalColumns;
-
-      const progress = totalRows > 0 ? (currentRow / totalRows) * 100 : 0;
-      document.getElementById("progress-bar").style.width =
-        `${Math.min(progress, 100)}%`;
-
-      updateControlButton();
-    }
-
-    // Запускаем интервалы для активной вкладки (Основное)
-    statusIntervalId = setInterval(updateStatus, 1000);
-    signalIntervalId = setInterval(updateSignalStatus, 500);
-
-    updateStatus();
-    updateSignalStatus();
-  };
-
-  // --- ОЧИСТКА ПРИ ВЫХОДЕ ---
-  window.onbeforeunload = function () {
-    if (statusIntervalId) clearInterval(statusIntervalId);
-    if (signalIntervalId) clearInterval(signalIntervalId);
-    if (patternIntervalId) clearInterval(patternIntervalId);
-    if (logsIntervalId) clearInterval(logsIntervalId);
-  };
-</script>
+      };
+    </script>
   </body>
 </html>
