@@ -37,6 +37,9 @@ impl LogQueue {
         let entry_clone = entry.clone();
         // SAFETY: Only one producer (main or ISR)
         let queue = unsafe { &mut *self.queue.get() };
+        if queue.len() >= 128 {
+            let _ = queue.dequeue();
+        }
         if queue.enqueue(entry).is_err() {
             queue.dequeue();
             let _ = queue.enqueue(entry_clone);
@@ -118,6 +121,18 @@ pub fn push_web_log(entry: LogEntry) {
     }
 
     logs.push(entry);
+}
+
+pub fn trim_logs() {
+    let mut logs = WEB_LOGS.lock().unwrap();
+    if logs.len() > 256 {
+        let cutoff = logs.len().saturating_sub(256);
+        logs.drain(0..cutoff);
+    }
+
+    while LOG_QUEUE.len() > 128 {
+        let _ = LOG_QUEUE.pop();
+    }
 }
 
 pub fn get_logs() -> Vec<LogEntry> {

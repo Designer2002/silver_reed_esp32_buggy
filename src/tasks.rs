@@ -2,17 +2,16 @@ use crate::gpio::handshake;
 use crate::pattern::PATTERN;
 use crate::queue::{EVT_CCP, EVT_HOK, EVT_KSL, EVT_ND1, QUEUE};
 use crate::state::{
-    BUFFER_SIZE, CURRENT_CHUNK_START_ROW, GLOBAL_ROW, PATTERN_END, PATTERN_START, ROW, ROWS_IN_CURRENT_CHUNK, SolenoidHit, US_PER_MS,
+    CURRENT_CHUNK_START_ROW, GLOBAL_ROW, PATTERN_END, PATTERN_START, ROW, ROWS_IN_CURRENT_CHUNK, US_PER_MS,
 };
 use crate::{
     gpio::{on_ccp_tick_fast, on_hok_change_fast, on_ksl_change, on_nd1_falling_fast},
     isr::{install_isrs, uninstall_isrs},
-    logger::{log, pop_log, push_web_log},
-    state::{self, HOK},
+    logger::{log, pop_log},
+    state::{self},
 };
 use esp_idf_hal::delay::FreeRtos;
 use log::info;
-use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 use std::{ffi::c_void, thread, time::Duration};
 
@@ -20,38 +19,38 @@ pub extern "C" fn engine_task(_: *mut c_void) {
     info!("Engine task started");
 
     loop {
-        let evt: Option<((u8, u32), bool)> = QUEUE.recv_front(1u32);
+        let evt: Option<(crate::queue::EngineEvent, bool)> = QUEUE.recv_front(1u32);
 
-        if let Some(((signal, seq), _)) = evt {
-            if signal == EVT_CCP {
-                on_ccp_tick_fast(seq);
-            } else if signal == EVT_ND1 {
+        if let Some((event, _)) = evt {
+            let _timestamp_us = event.timestamp_us;
+            if event.kind == EVT_CCP {
+                on_ccp_tick_fast(event.seq);
+            } else if event.kind == EVT_ND1 {
                 on_nd1_falling_fast();
-            } else if signal == EVT_KSL {
-                on_ksl_change(seq);
-            } else if signal == EVT_HOK {
-                let level = unsafe { esp_idf_sys::gpio_get_level(HOK) };
-                on_hok_change_fast(level == 1);
+            } else if event.kind == EVT_KSL {
+                on_ksl_change(event.seq);
+            } else if event.kind == EVT_HOK {
+                on_hok_change_fast(event.level);
             }
         }
     }
 }
 
-pub extern "C" fn client_task(_: *mut c_void, client: *mut esp_idf_sys::esp_http_client) {
+pub extern "C" fn client_task(_: *mut c_void) {
     info!("Client started - streaming pattern loader");
-    start_knitting(client);
+    start_knitting();
     loop {
         // ✅ Проверяем: если вязание началось и начальный чанк еще не запрошен
         if state::KNITTING.load(Ordering::Relaxed)
             && !state::INITIAL_CHUNK_REQUESTED.load(Ordering::Relaxed)
         {
             // Запрашиваем первый чанк
-            crate::client::request_initial_chunk(client);
+            crate::client::request_initial_chunk();
             state::INITIAL_CHUNK_REQUESTED.store(true, Ordering::Relaxed);
         }
 
         // Проверяем, не пора ли запросить новый чанк
-        crate::client::check_and_request_chunk(client);
+        crate::client::check_and_request_chunk();
 
         // Обрабатываем полученные данные
         if let Some(data) = crate::client::receive_data() {
@@ -64,7 +63,7 @@ pub extern "C" fn client_task(_: *mut c_void, client: *mut esp_idf_sys::esp_http
         if state::ROW_INFO_PENDING.load(Ordering::Relaxed) {
             let row = state::ROW_INFO_ROW.load(Ordering::Relaxed);
             let dir = state::ROW_INFO_DIR.load(Ordering::Relaxed);
-            if crate::client::send_queued_row_info(client) {
+            if crate::client::send_queued_row_info() {
                 let msg = format!(
                         "Row info sent: row={}, dir={}",
                         row,
@@ -81,8 +80,11 @@ pub extern "C" fn client_task(_: *mut c_void, client: *mut esp_idf_sys::esp_http
             state::ROW_INFO_PENDING.store(false, Ordering::Relaxed);
         }
 
+        // Принудительно чистим накопленные буферы и очереди, чтобы память не росла во время ретраев.
+        crate::client::trim_memory();
+
         // Отправляем один hit за 10 мс, чтобы не накапливать большой JSON и не переполнять стек.
-        let _ = crate::client::send_solenoid_hits(client);
+        let _ = crate::client::send_solenoid_hits();
 
         // Небольшая задержка чтобы не занимать 100% CPU
         thread::sleep(Duration::from_millis(10));
@@ -117,7 +119,7 @@ pub fn init_knitter() {
     state::KNITTING.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
-pub fn start_knitting(client: *mut esp_idf_sys::esp_http_client) {
+pub fn start_knitting() {
     log("INFO", "Starting knitting...");
     install_isrs();
     state::KNITTING.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -127,7 +129,7 @@ pub fn start_knitting(client: *mut esp_idf_sys::esp_http_client) {
     state::HOK_DIR_CHANGE_DEBOUNCE_US.store(0, Ordering::Relaxed);
 
     // ✅ Сначала проверяем restart флаг от сервера
-    crate::client::check_if_restart(client);
+    crate::client::check_if_restart();
 
     // ✅ Если нет сохранённого прогресса (или был restart) — начинаем с нуля
     if crate::knit_state::restore_progress().is_none() {

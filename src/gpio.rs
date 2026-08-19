@@ -37,34 +37,22 @@ fn dob_set_high_fast() {
     }
 }
 
-#[inline(always)]
-fn is_ccp_before_ksl(ccp_seq: u32, ksl_seq: u32) -> bool {
-    ccp_seq < ksl_seq
-}
+// pub fn get_pin_state_json() -> String {
+//     let ccp_state = unsafe { esp_idf_sys::gpio_get_level(CCP) };
+//     let hok_state = unsafe { esp_idf_sys::gpio_get_level(HOK) };
+//     let ksl_state = unsafe { esp_idf_sys::gpio_get_level(KSL) };
+//     let nd1_state = unsafe { esp_idf_sys::gpio_get_level(ND1) };
+//     let dob_state = unsafe { esp_idf_sys::gpio_get_level(DOB) };
 
-pub fn get_pin_state_json() -> String {
-    let mut ccp_state = 0;
-    let mut hok_state = 0;
-    let mut ksl_state = 0;
-    let mut nd1_state = 0;
-    let mut dob_state = 0;
-    unsafe {
-        ccp_state = esp_idf_sys::gpio_get_level(CCP);
-        hok_state = esp_idf_sys::gpio_get_level(HOK);
-        ksl_state = esp_idf_sys::gpio_get_level(KSL);
-        nd1_state = esp_idf_sys::gpio_get_level(ND1);
-        dob_state = esp_idf_sys::gpio_get_level(DOB);
-    }
-    let response_json = format!(
-        r#"{{"ccp": "{}", "hok": "{}", "ksl": "{}", "nd1": "{}", "dob": "{}"}}"#,
-        if ccp_state == 1 { "HIGH" } else { "LOW" },
-        if hok_state == 1 { "HIGH" } else { "LOW" },
-        if ksl_state == 1 { "HIGH" } else { "LOW" },
-        if nd1_state == 1 { "HIGH" } else { "LOW" },
-        if dob_state == 1 { "HIGH" } else { "LOW" }
-    );
-    response_json
-}
+//     format!(
+//         r#"{{"ccp": "{}", "hok": "{}", "ksl": "{}", "nd1": "{}", "dob": "{}"}}"#,
+//         if ccp_state == 1 { "HIGH" } else { "LOW" },
+//         if hok_state == 1 { "HIGH" } else { "LOW" },
+//         if ksl_state == 1 { "HIGH" } else { "LOW" },
+//         if nd1_state == 1 { "HIGH" } else { "LOW" },
+//         if dob_state == 1 { "HIGH" } else { "LOW" }
+//     )
+// }
 
 pub fn init_pins() {
     unsafe {
@@ -148,15 +136,20 @@ pub fn on_ksl_change(_seq: u32) {
             // Считаем ряды в текущем чанке
             let rows_in_chunk = ROWS_IN_CURRENT_CHUNK.fetch_add(1, Ordering::Relaxed) + 1;
 
-            // Если это 4-й ряд в чанке (rows_in_chunk == 4), ставим флаг запроса
-            // Так мы успеем загрузить следующий чанк пока вяжем 4-й ряд
+            // Если это 4-й ряд в чанке (rows_in_chunk == 4), ставим флаг запроса.
+            // Сам swap PATTERN → NEXT делается только после завершения ряда, когда активный chunk реально закончился.
             if rows_in_chunk == 4 {
                 REQUEST_NEW_CHUNK.store(true, Ordering::Relaxed);
             }
-            
-            // Если достигли конца чанка (4 ряда), сбрасываем счетчик
+
             if rows_in_chunk >= CHUNK_SIZE as i32 {
-                ROWS_IN_CURRENT_CHUNK.store(0, Ordering::Relaxed);
+                if crate::pattern::swap_to_next_chunk() {
+                    let next_start = crate::state::NEXT_CHUNK_START_ROW.load(Ordering::Relaxed);
+                    CURRENT_CHUNK_START_ROW.store(next_start, Ordering::Relaxed);
+                    ROWS_IN_CURRENT_CHUNK.store(0, Ordering::Relaxed);
+                } else {
+                    ROWS_IN_CURRENT_CHUNK.store(0, Ordering::Relaxed);
+                }
             }
 
             // ✅ Сохраняем прогресс в NVS
@@ -171,14 +164,8 @@ pub fn on_ksl_change(_seq: u32) {
 }
 
 #[inline(always)]
-pub fn on_ccp_tick_fast(ccp_seq: u32) {
+pub fn on_ccp_tick_fast(_ccp_seq: u32) {
     let inside = INSIDE_PATTERN.load(Ordering::Relaxed);
-    let ksl_seq = LAST_KSL_SEQUENCE.load(Ordering::SeqCst);
-
-    if ccp_seq <= ksl_seq {
-        dob_set_high_fast();
-        return;
-    }
 
     if inside {
         let needle = NEEDLE.load(Ordering::Relaxed);

@@ -1,14 +1,8 @@
-use std::{
-    borrow::Cow,
-    ffi::{CStr, CString},
-    ptr,
-    sync::LazyLock,
-};
+use std::{ffi::CString, ptr, sync::LazyLock};
 
 use crate::{
     log_fmt,
     logger::log,
-    pattern::update_pattern_chunk,
     state::{
         BUFFER_SIZE, CHUNK_LOADING, CHUNK_RETRY_DEADLINE_US, CHUNK_RETRY_INTERVAL_US,
         CHUNK_RETRY_PENDING, CHUNK_RETRY_ROW, CHUNK_SIZE, CURRENT_CHUNK_START_ROW, GLOBAL_ROW,
@@ -16,12 +10,20 @@ use crate::{
     },
 };
 use esp_idf_sys::{
-    ESP_FAIL, ESP_OK, TICKS_PER_US_ROM, esp_err_t, esp_http_client, esp_http_client_cleanup, esp_http_client_close, esp_http_client_config_t, esp_http_client_event_t, esp_http_client_fetch_headers, esp_http_client_init, esp_http_client_is_chunked_response, esp_http_client_method_t_HTTP_METHOD_GET, esp_http_client_method_t_HTTP_METHOD_POST, esp_http_client_open, esp_http_client_read_response, esp_http_client_set_header, esp_http_client_set_method, esp_http_client_set_redirection, esp_http_client_set_url, esp_http_client_transport_t_HTTP_TRANSPORT_OVER_TCP, esp_http_client_write, esp_tls_error_handle_t, esp_tls_get_and_clear_last_error,
+    esp_err_t, esp_http_client, esp_http_client_cleanup, esp_http_client_close,
+    esp_http_client_config_t, esp_http_client_event_t, esp_http_client_fetch_headers,
+    esp_http_client_init, esp_http_client_is_chunked_response,
+    esp_http_client_method_t_HTTP_METHOD_GET, esp_http_client_method_t_HTTP_METHOD_POST,
+    esp_http_client_open, esp_http_client_read_response, esp_http_client_set_header,
+    esp_http_client_set_method, esp_http_client_set_redirection, esp_http_client_set_url,
+    esp_http_client_transport_t_HTTP_TRANSPORT_OVER_TCP, esp_http_client_write,
+    esp_tls_error_handle_t, esp_tls_get_and_clear_last_error, ESP_FAIL, ESP_OK, TICKS_PER_US_ROM,
 };
 use heapless::mpmc;
 
-// Очередь для полученных данных от сервера
-static DATA_QUEUE: LazyLock<mpmc::Queue<Vec<u8>, 8>> = LazyLock::new(|| mpmc::Queue::default());
+// Очередь для полученных данных от сервера.
+// heapless::mpmc::Queue требует размер > 1, поэтому оставляем 2, чтобы не накапливать heap.
+static DATA_QUEUE: LazyLock<mpmc::Queue<Vec<u8>, 2>> = LazyLock::new(|| mpmc::Queue::default());
 
 // IP сервера - настраивается при инициализации
 static mut SERVER_IP: [u8; 16] = [0u8; 16];
@@ -145,18 +147,6 @@ pub unsafe extern "C" fn http_event_handler(evt: *mut esp_http_client_event_t) -
         HttpEventId::Disconnected => {
             log("INFO", "HTTP_EVENT_DISCONNECTED");
 
-            let mut mbedtls_err: i32 = 0;
-            let err = esp_tls_get_and_clear_last_error(
-                event.data as esp_tls_error_handle_t,
-                &mut mbedtls_err,
-                ptr::null_mut(),
-            );
-
-            if err != 0 {
-                log_fmt!("INFO", "Last esp error code: 0x{:x}", err);
-                log_fmt!("INFO", "Last mbedtls failure: 0x{:x}", mbedtls_err);
-            }
-
             if !event.user_data.is_null() {
                 let user_data = &mut *(event.user_data as *mut HttpEventContext);
                 user_data.output_buffer.clear();
@@ -211,9 +201,32 @@ pub fn cleanup_client(client: *mut esp_http_client) {
     }
 }
 
+pub fn trim_memory() {
+    for _ in 0..2 {
+        let _ = DATA_QUEUE.dequeue();
+    }
+
+    crate::logger::trim_logs();
+
+    let mut next = crate::state::NEXT_CHUNK_ROWS.lock().unwrap();
+    if next.as_ref().is_some() {
+        let rows = next.as_ref().unwrap().len();
+        if rows > 2 {
+            *next = None;
+        }
+    }
+}
+
+fn close_client(client: *mut esp_http_client) {
+    unsafe {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+    }
+}
+
 /// Проверить, нужно ли начать с нуля (restart флаг от сервера)
 /// Возвращает true если сервер требует сбросить прогресс
-fn check_server_restart_flag(client: *mut esp_http_client) -> bool {
+fn check_server_restart_flag() -> bool {
     unsafe {
         let ip = get_server_ip();
         let url = format!("http://{}:6666/check_restart", ip);
@@ -225,32 +238,35 @@ fn check_server_restart_flag(client: *mut esp_http_client) -> bool {
             }
         };
 
-        esp_http_client_set_url(client, c_url.as_ptr());
-        esp_http_client_set_method(client, esp_http_client_method_t_HTTP_METHOD_GET);
-
-        let err = esp_http_client_open(client, 0);
-        if err != ESP_OK {
-            log("WARN", "Failed to open check_restart connection");
-            esp_http_client_close(client);
+        let temp_client = create_client(c_url.as_ptr());
+        if temp_client.is_null() {
+            log(
+                "ERROR",
+                "Failed to create temporary client for restart check",
+            );
             return false;
         }
 
-        esp_http_client_fetch_headers(client);
+        esp_http_client_set_url(temp_client, c_url.as_ptr());
+        esp_http_client_set_method(temp_client, esp_http_client_method_t_HTTP_METHOD_GET);
+
+        let err = esp_http_client_open(temp_client, 0);
+        if err != ESP_OK {
+            log("WARN", "Failed to open check_restart connection");
+            close_client(temp_client);
+            return false;
+        }
+
+        esp_http_client_fetch_headers(temp_client);
 
         let mut output_buffer = [0u8; 256];
-        let data_read = esp_http_client_read_response(client, output_buffer.as_mut_ptr(), 256);
-        esp_http_client_close(client);
+        let data_read = esp_http_client_read_response(temp_client, output_buffer.as_mut_ptr(), 256);
+        close_client(temp_client);
 
         if data_read > 0 {
-            let data_str = match String::from_utf8(output_buffer[..data_read as usize].to_vec()) {
-                Ok(s) => s,
-                Err(_) => return false,
-            };
-
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data_str) {
-                if let Some(restart) = json.get("restart").and_then(|v| v.as_bool()) {
-                    return restart;
-                }
+            let payload = &output_buffer[..data_read as usize];
+            if let Ok(response) = serde_json::from_slice::<RestartResponse>(payload) {
+                return response.restart.unwrap_or(false);
             }
         }
 
@@ -260,10 +276,10 @@ fn check_server_restart_flag(client: *mut esp_http_client) -> bool {
 
 /// Проверить, нужно ли начинать с 0
 /// Если сервер вернул restart=true - сбрасываем весь прогресс
-pub fn check_if_restart(client: *mut esp_http_client) {
+pub fn check_if_restart() {
     log("INFO", "Checking if restart is required from server...");
 
-    let should_restart = check_server_restart_flag(client);
+    let should_restart = check_server_restart_flag();
 
     if should_restart {
         log("INFO", "Server requires restart - resetting progress to 0");
@@ -292,43 +308,61 @@ pub fn check_if_restart(client: *mut esp_http_client) {
 
 /// Отправить запрос на сервер для получения новой части узора
 /// start_row: номер ряда, с которого начинается чанк
-pub fn send_chunk_request(client: *mut esp_http_client, start_row: i32) -> bool {
+pub fn send_chunk_request(start_row: i32) -> bool {
     unsafe {
         let ip = get_server_ip();
         let url = format!("http://{}:6666/chunk?row={}", ip, start_row);
-        let c_url = CString::new(url).unwrap();
-        esp_http_client_set_url(client, c_url.as_ptr());
-        esp_http_client_set_method(client, esp_http_client_method_t_HTTP_METHOD_GET);
+        let c_url = match CString::new(url) {
+            Ok(u) => u,
+            Err(_) => {
+                log("ERROR", "Failed to create check_restart URL");
+                return false;
+            }
+        };
 
-        let err = esp_http_client_open(client, 0);
-        if err != ESP_OK {
-            let error_msg = format!("Failed to open HTTP connection: {}", err);
-            log("ERROR", &error_msg);
-            // освобождаем строку после логирования, чтобы не держать её в памяти дольше нужного
-            drop(error_msg);
-            esp_http_client_close(client);
+        let temp_client = create_client(c_url.as_ptr());
+        if temp_client.is_null() {
+            log(
+                "ERROR",
+                "Failed to create temporary client for chunk request",
+            );
             return false;
         }
 
-        let content_length = esp_http_client_fetch_headers(client);
+        esp_http_client_set_url(temp_client, c_url.as_ptr());
+        esp_http_client_set_method(temp_client, esp_http_client_method_t_HTTP_METHOD_GET);
+
+        let err = esp_http_client_open(temp_client, 0);
+        if err != ESP_OK {
+            let error_msg = format!("Failed to open HTTP connection: {}", err);
+            log("ERROR", &error_msg);
+            drop(error_msg);
+            close_client(temp_client);
+            return false;
+        }
+
+        let content_length = esp_http_client_fetch_headers(temp_client);
         if content_length < 0 {
             let error_msg = format!("HTTP fetch headers failed: {}", content_length);
             log("ERROR", &error_msg);
             drop(error_msg);
-            esp_http_client_close(client);
+            close_client(temp_client);
             return false;
         }
 
-        // Выделяем буфер для ответа
-        let mut output_buffer = Box::new([0u8; BUFFER_SIZE as usize]);
+        let mut output_buffer = [0u8; BUFFER_SIZE as usize];
         let data_read =
-            esp_http_client_read_response(client, output_buffer.as_mut_ptr(), BUFFER_SIZE);
+            esp_http_client_read_response(temp_client, output_buffer.as_mut_ptr(), BUFFER_SIZE);
 
-        esp_http_client_close(client);
+        close_client(temp_client);
 
         if data_read >= 0 {
-            let data: Vec<u8> = output_buffer[0..data_read as usize].to_vec();
-            // Отправляем данные в очередь для обработки
+            let data: Vec<u8> = output_buffer[..data_read as usize].to_vec();
+
+            for _ in 0..2 {
+                let _ = DATA_QUEUE.dequeue();
+            }
+
             if DATA_QUEUE.enqueue(data).is_err() {
                 log("WARN", "Data queue is full, dropping chunk");
                 return false;
@@ -343,87 +377,94 @@ pub fn send_chunk_request(client: *mut esp_http_client, start_row: i32) -> bool 
     }
 }
 
-/// Обработать полученные данные и обновить паттерн
-/// Ожидаемый формат JSON: {"rows": [[0,1,0...], [1,0,1...], ...], "start_row": N}
-pub fn process_chunk_data(data: Vec<u8>) -> bool {
-    let data_str = match String::from_utf8(data) {
-        Ok(s) => s,
-        Err(e) => {
-            let error_msg = format!("Failed to parse UTF8: {}", e);
-            log("ERROR", &error_msg);
-            drop(error_msg);
-            return false;
-        }
-    };
+#[derive(serde::Deserialize, Debug)]
+struct ChunkResponse {
+    rows: Vec<Vec<u8>>,
+    #[serde(default)]
+    start_row: Option<usize>,
+    #[serde(default)]
+    total_rows: Option<i64>,
+    #[serde(default)]
+    complete: Option<bool>,
+    #[serde(default)]
+    reset: Option<bool>,
+}
 
-    // Парсим JSON
-    let json_value: serde_json::Value = match serde_json::from_str(&data_str) {
+#[derive(serde::Deserialize, Debug)]
+struct RestartResponse {
+    #[serde(default)]
+    restart: Option<bool>,
+}
+
+/// Обработать полученные данные и обновить паттерн.
+/// Важно: не строим `serde_json::Value`, потому что на ESP32 это даёт OOM даже на небольших чанках.
+pub fn process_chunk_data(data: Vec<u8>) -> bool {
+    if data.is_empty() {
+        log("WARN", "Empty chunk payload received");
+        return false;
+    }
+
+    if data.len() > MAX_HTTP_OUTPUT_BUFFER {
+        log(
+            "WARN",
+            "Chunk payload too large for ESP32 heap; dropping it",
+        );
+        return false;
+    }
+
+    let response: ChunkResponse = match serde_json::from_slice(&data) {
         Ok(v) => v,
         Err(e) => {
-            let error_msg = format!("Failed to parse JSON: {} - data: {}", e, data_str);
+            let error_msg = format!("Failed to parse chunk JSON: {} (len={})", e, data.len());
             log("ERROR", &error_msg);
             drop(error_msg);
             return false;
         }
     };
 
-    let rows_array = match json_value.get("rows").and_then(|v| v.as_array()) {
-        Some(a) => a,
-        None => {
-            log("ERROR", "Invalid JSON: missing 'rows' array");
-            return false;
-        }
-    };
+    let start_row = response.start_row.unwrap_or(0);
 
-    let start_row = json_value
-        .get("start_row")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0) as usize;
-
-    // ✅ Сохраняем total_rows из ответа сервера
-    if let Some(total) = json_value.get("total_rows").and_then(|v| v.as_i64()) {
+    // ✅ Сохраняем total_rows из ответа сервера.
+    if let Some(total) = response.total_rows {
         crate::state::PATTERN_HEIGHT.store(total as i32, core::sync::atomic::Ordering::Relaxed);
     }
 
-    // ✅ Проверяем flag "complete" — все ряды отправлены
-    if let Some(complete) = json_value.get("complete").and_then(|v| v.as_bool()) {
-        if complete {
-            log("INFO", "All rows sent by server — pattern complete!");
-            crate::knit_state::reset_progress();
-            crate::tasks::reset_knitting();
-        }
+    // ✅ Проверяем flag "complete" — все ряды отправлены.
+    if response.complete.unwrap_or(false) {
+        log("INFO", "All rows sent by server — pattern complete!");
+        crate::knit_state::reset_progress();
+        crate::tasks::reset_knitting();
     }
 
-    // ✅ Проверяем flag "reset" — команда сервера сбросить прогресс
-    if let Some(reset) = json_value.get("reset").and_then(|v| v.as_bool()) {
-        if reset {
-            log("INFO", "Server sent RESET command — resetting progress!");
-            crate::knit_state::reset_progress();
-        }
+    // ✅ Проверяем flag "reset" — команда сервера сбросить прогресс.
+    if response.reset.unwrap_or(false) {
+        log("INFO", "Server sent RESET command — resetting progress!");
+        crate::knit_state::reset_progress();
     }
 
-    // Парсим ряды: [[0,1,0...], [1,0,1...], ...] -> Vec<Vec<bool>>
-    let parsed_rows: Vec<Vec<bool>> = rows_array
-        .iter()
-        .filter_map(|row_val| {
-            row_val
-                .as_array()
-                .map(|arr| arr.iter().map(|v| v.as_i64().unwrap_or(0) != 0).collect())
-        })
+    let parsed_rows: Vec<Vec<bool>> = response
+        .rows
+        .into_iter()
+        .map(|row| row.into_iter().map(|v| v != 0).collect())
         .collect();
 
     let width = parsed_rows.first().map(|r| r.len()).unwrap_or(0);
-
     if width == 0 {
         log("ERROR", "Empty chunk received");
         return false;
     }
 
-    // Обновляем паттерн
-    update_pattern_chunk(parsed_rows, start_row, width);
+    // Сохраняем incoming chunk в NEXT_CHUNK_ROWS — активный PATTERN меняется только после swap на KSL FALL.
+    crate::pattern::store_next_chunk(parsed_rows, start_row, width);
 
-    // ✅ Если это начальный чанк — обновляем PATTERN_START/END
-    // Они были установлены в 0 при start_knitting т.к. паттерн ещё не загружен
+    // Для самого первого чанка сразу активируем PATTERN, чтобы не было пустого активного паттерна до первого KSL.
+    if crate::state::PATTERN_END.load(core::sync::atomic::Ordering::Relaxed) == 0
+        && crate::pattern::PATTERN.lock().unwrap().rows.is_empty()
+    {
+        let _ = crate::pattern::swap_to_next_chunk();
+    }
+
+    // ✅ Если это начальный чанк — обновляем PATTERN_START/END.
     if crate::state::PATTERN_END.load(core::sync::atomic::Ordering::Relaxed) == 0 {
         crate::state::PATTERN_START.store(0, core::sync::atomic::Ordering::Relaxed);
         crate::state::PATTERN_END.store(width as i32 - 1, core::sync::atomic::Ordering::Relaxed);
@@ -443,7 +484,7 @@ pub fn process_chunk_data(data: Vec<u8>) -> bool {
 }
 
 /// Проверить и запросить новый чанк если пора
-pub fn check_and_request_chunk(client: *mut esp_http_client) {
+pub fn check_and_request_chunk() {
     // ✅ Сначала проверяем retry
     if CHUNK_RETRY_PENDING.load(core::sync::atomic::Ordering::Relaxed) {
         let now = unsafe { esp_idf_sys::esp_timer_get_time() } as u32;
@@ -454,8 +495,7 @@ pub fn check_and_request_chunk(client: *mut esp_http_client) {
             log("INFO", &msg);
             drop(msg);
 
-            if send_chunk_request(client, row) {
-                CURRENT_CHUNK_START_ROW.store(row, core::sync::atomic::Ordering::Relaxed);
+            if send_chunk_request(row) {
                 CHUNK_RETRY_PENDING.store(false, core::sync::atomic::Ordering::Relaxed);
                 log("INFO", "Chunk retry succeeded");
             } else {
@@ -485,10 +525,9 @@ pub fn check_and_request_chunk(client: *mut esp_http_client) {
         log("INFO", &msg);
         drop(msg);
 
-        if send_chunk_request(client, next_start) {
-            // ✅ Обновляем CURRENT_CHUNK_START_ROW только после успешной загрузки
-            CURRENT_CHUNK_START_ROW.store(next_start, core::sync::atomic::Ordering::Relaxed);
-            // ⚠️ НЕ сбрасываем ROWS_IN_CURRENT_CHUNK здесь — это делается в gpio.rs при KSL fall
+        if send_chunk_request(next_start) {
+            // Запрос нового чанка не означает, что активный chunk уже поменялся.
+            // Переключение происходит только в KSL FALL после завершения текущего ряда.
             CHUNK_LOADING.store(false, core::sync::atomic::Ordering::Relaxed);
             REQUEST_NEW_CHUNK.store(false, core::sync::atomic::Ordering::Relaxed);
         } else {
@@ -514,7 +553,7 @@ pub fn receive_data() -> Option<Vec<u8>> {
 
 /// Запросить начальный чанк при старте вязания
 /// Запрашиваем ряды начиная с 0
-pub fn request_initial_chunk(client: *mut esp_http_client) {
+pub fn request_initial_chunk() {
     CHUNK_LOADING.store(true, core::sync::atomic::Ordering::Relaxed);
     CURRENT_CHUNK_START_ROW.store(0, core::sync::atomic::Ordering::Relaxed);
     ROWS_IN_CURRENT_CHUNK.store(0, core::sync::atomic::Ordering::Relaxed);
@@ -524,29 +563,55 @@ pub fn request_initial_chunk(client: *mut esp_http_client) {
     // ✅ НЕ меняем CURRENT_CHUNK_START_ROW здесь — он останется 0
     // Ряды 0-3 загружаются, и CURRENT_CHUNK_START_ROW должен оставаться 0
     // пока мы фактически не провяжем эти ряды
-    send_chunk_request(client, 0);
+    if send_chunk_request(0) {
+        log("INFO", "Initial chunk request succeeded");
+    } else {
+        log("ERROR", "Initial chunk request failed");
+        CHUNK_RETRY_PENDING.store(true, core::sync::atomic::Ordering::Relaxed);
+        CHUNK_RETRY_ROW.store(0, core::sync::atomic::Ordering::Relaxed);
+        CHUNK_RETRY_DEADLINE_US.store(
+            unsafe { esp_idf_sys::esp_timer_get_time() } as u32 + CHUNK_RETRY_INTERVAL_US,
+            core::sync::atomic::Ordering::Relaxed,
+        );
+    }
 
     CHUNK_LOADING.store(false, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Отправить флаг на сервер (когда входим в 3-й ряд)
 /// Можно использовать для уведомления сервера
-pub fn send_ready_flag(client: *mut esp_http_client, row: i32) -> bool {
+pub fn send_ready_flag(row: i32) -> bool {
     unsafe {
         let ip = get_server_ip();
         let url = format!("http://{}:6666/ready?row={}", ip, row);
+        let c_url = match CString::new(url) {
+            Ok(u) => u,
+            Err(_) => {
+                log("ERROR", "Failed to create check_restart URL");
+                return false;
+            }
+        };
 
-        esp_http_client_set_url(client, url.as_ptr());
-        esp_http_client_set_method(client, esp_http_client_method_t_HTTP_METHOD_GET);
-
-        let err = esp_http_client_open(client, 0);
-        if err != ESP_OK {
-            esp_http_client_close(client);
+        let temp_client = create_client(c_url.as_ptr());
+        if temp_client.is_null() {
+            log(
+                "ERROR",
+                "Failed to create temporary client for ready flag sending",
+            );
             return false;
         }
 
-        esp_http_client_fetch_headers(client);
-        esp_http_client_close(client);
+        esp_http_client_set_url(temp_client, c_url.as_ptr());
+        esp_http_client_set_method(temp_client, esp_http_client_method_t_HTTP_METHOD_GET);
+
+        let err = esp_http_client_open(temp_client, 0);
+        if err != ESP_OK {
+            close_client(temp_client);
+            return false;
+        }
+
+        esp_http_client_fetch_headers(temp_client);
+        close_client(temp_client);
         true
     }
 }
@@ -561,36 +626,40 @@ pub fn queue_row_info(row: i32, direction: bool) {
 }
 
 /// Реально отправить queued row_info через HTTP (вызывается из client_task)
-pub fn send_queued_row_info(client: *mut esp_http_client) -> bool {
+pub fn send_queued_row_info() -> bool {
     let row = crate::state::ROW_INFO_ROW.load(core::sync::atomic::Ordering::Relaxed);
     let direction = crate::state::ROW_INFO_DIR.load(core::sync::atomic::Ordering::Relaxed);
     unsafe {
         let ip = get_server_ip();
         let dir_str = if direction { "right" } else { "left" };
         let url = format!("http://{}:6666/row_info?row={}&dir={}", ip, row, dir_str);
-
         let c_url = match CString::new(url) {
             Ok(u) => u,
             Err(_) => {
-                log("ERROR", "Failed to create URL for row_info");
+                log("ERROR", "Failed to create check_restart URL");
                 return false;
             }
         };
 
-        esp_http_client_set_url(client, c_url.as_ptr());
-        esp_http_client_set_method(client, esp_http_client_method_t_HTTP_METHOD_GET);
-
-        let err = esp_http_client_open(client, 0);
-        if err != ESP_OK {
-            esp_http_client_close(client);
+        let temp_client = create_client(c_url.as_ptr());
+        if temp_client.is_null() {
+            log("ERROR", "Failed to create temporary client for row info");
             return false;
         }
 
-        // ✅ ВАЖНО: читаем response body чтобы буфер очистился
-        let mut discard_buf = [0u8; 256];
-        let _ = esp_http_client_read_response(client, discard_buf.as_mut_ptr(), 256);
+        esp_http_client_set_url(temp_client, c_url.as_ptr());
+        esp_http_client_set_method(temp_client, esp_http_client_method_t_HTTP_METHOD_GET);
 
-        esp_http_client_close(client);
+        let err = esp_http_client_open(temp_client, 0);
+        if err != ESP_OK {
+            close_client(temp_client);
+            return false;
+        }
+
+        let mut discard_buf = [0u8; 256];
+        let _ = esp_http_client_read_response(temp_client, discard_buf.as_mut_ptr(), 256);
+
+        close_client(temp_client);
         true
     }
 }
@@ -609,21 +678,20 @@ impl Default for HttpEventContext {
     }
 }
 
-pub fn create_client() -> *mut esp_http_client {
+pub fn create_client(url: *const u8) -> *mut esp_http_client {
     let mut config: esp_http_client_config_t = esp_http_client_config_t::default();
-    config.host = get_server_ip().as_ptr();
-    config.path = "/".as_ptr();
+    config.url = url;
     config.transport_type = esp_http_client_transport_t_HTTP_TRANSPORT_OVER_TCP;
     config.event_handler = Some(http_event_handler);
-    unsafe {
-        let client = esp_http_client_init(&config);
-        client
-    }
+
+    // Не привязываем host/path к временной строке. Каждый HTTP-запрос задаёт полный URL через set_url,
+    // а `esp_http_client_init()` получает только безопасный базовый конфиг.
+    unsafe { esp_http_client_init(&config) }
 }
 
 /// Отправить один solenoid hit на сервер с частотой ~1 ms.
 /// Это избегает большого JSON-пакета и переполнения стека.
-pub fn send_solenoid_hits(client: *mut esp_http_client) -> usize {
+pub fn send_solenoid_hits() -> usize {
     use crate::state::SOLENOID_HITS;
 
     let Some(hit) = SOLENOID_HITS.recv_front(TICKS_PER_US_ROM * 1000) else {
@@ -647,34 +715,45 @@ pub fn send_solenoid_hits(client: *mut esp_http_client) -> usize {
         let url = format!("http://{}:6666/solenoid_hits", ip);
         let c_url = match CString::new(url) {
             Ok(u) => u,
-            Err(_) => return 0,
+            Err(_) => {
+                log(
+                    "ERROR",
+                    "Failed to create temporary client for solenoid hits info sending",
+                );
+                return 0;
+            }
         };
+        let temp_client = create_client(c_url.as_ptr());
+        if temp_client.is_null() {
+            return 0;
+        }
         let body_bytes = json.as_bytes();
-        esp_http_client_set_url(client, c_url.as_ptr());
-        esp_http_client_set_method(client, esp_http_client_method_t_HTTP_METHOD_POST);
+        esp_http_client_set_url(temp_client, c_url.as_ptr());
+        esp_http_client_set_method(temp_client, esp_http_client_method_t_HTTP_METHOD_POST);
         let hdr_name = CString::new("Content-Type").unwrap();
         let hdr_val = CString::new("application/json").unwrap();
-        esp_http_client_set_header(client, hdr_name.as_ptr(), hdr_val.as_ptr());
+        esp_http_client_set_header(temp_client, hdr_name.as_ptr(), hdr_val.as_ptr());
 
         let body_ptr = body_bytes.as_ptr() as *const core::ffi::c_void;
-        let err = esp_http_client_open(client, body_bytes.len() as i32);
+        let err = esp_http_client_open(temp_client, body_bytes.len() as i32);
         if err != ESP_OK {
             log("ERROR", "Failed to open esp http client");
-            esp_http_client_close(client);
+            close_client(temp_client);
             return 0;
         }
 
-        let written = esp_http_client_write(client, body_ptr as *const u8, body_bytes.len() as i32);
+        let written =
+            esp_http_client_write(temp_client, body_ptr as *const u8, body_bytes.len() as i32);
         if written < 0 {
             log("ERROR", "Failed to write solenoid_hits body");
-            esp_http_client_close(client);
+            close_client(temp_client);
             return 0;
         }
 
-        let _ = esp_http_client_fetch_headers(client);
+        let _ = esp_http_client_fetch_headers(temp_client);
         let mut discard = [0u8; 128];
-        let _ = esp_http_client_read_response(client, discard.as_mut_ptr(), 128);
-        esp_http_client_close(client);
+        let _ = esp_http_client_read_response(temp_client, discard.as_mut_ptr(), 128);
+        close_client(temp_client);
         1
     };
 

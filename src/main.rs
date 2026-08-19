@@ -106,8 +106,7 @@ fn main() -> anyhow::Result<()> {
 
     let client_thread = std::thread::Builder::new()
         .spawn(move || {
-            let client = unsafe { client::create_client() };
-            client_task(null_mut(), client);
+            client_task(null_mut());
         })
         .unwrap();
     

@@ -1,5 +1,5 @@
 use std::sync::{LazyLock, Mutex};
-use crate::state::CHUNK_SIZE;
+use crate::state::{CHUNK_SIZE, CURRENT_CHUNK_START_ROW, NEXT_CHUNK_START_ROW, ROWS_IN_CURRENT_CHUNK};
 
 pub struct KnitPattern {
     pub rows: Vec<Vec<bool>>,
@@ -50,25 +50,53 @@ pub fn parse_pattern(pattern: &str) -> KnitPattern {
     }
 }
 
-// Обновление только части паттерна (чанка) - для потоковой загрузки
-// new_rows: массив из 4 рядов, start_row: номер ряда, с которого начинается чанк (ГЛОБАЛЬНЫЙ)
-// но внутри паттерна ряды сохраняются как local_index = global_index % CHUNK_SIZE
-pub fn update_pattern_chunk(new_rows: Vec<Vec<bool>>, start_row: usize, width: usize) {
-    let mut pattern = PATTERN.lock().unwrap();
-    let chunk_height = new_rows.len();
+// Сохраняем incoming chunk во временное NEXT_CHUNK_ROWS.
+// Активный PATTERN не меняется до явного swap после завершения текущего ряда.
+pub fn store_next_chunk(new_rows: Vec<Vec<bool>>, start_row: usize, width: usize) {
+    let mut next = crate::state::NEXT_CHUNK_ROWS.lock().unwrap();
+    *next = Some(new_rows);
+    drop(next);
 
-    // Убеждаемся, что паттерн имеет достаточный размер для CHUNK_SIZE рядов
+    NEXT_CHUNK_START_ROW.store(start_row as i32, std::sync::atomic::Ordering::Relaxed);
+    let _ = width;
+}
+
+pub fn swap_to_next_chunk() -> bool {
+    let mut next = crate::state::NEXT_CHUNK_ROWS.lock().unwrap();
+    let Some(next_rows) = next.take() else {
+        return false;
+    };
+
+    let width = next_rows.first().map(|row| row.len()).unwrap_or(0);
+    if width == 0 {
+        return false;
+    }
+
+    let start_row = NEXT_CHUNK_START_ROW.load(std::sync::atomic::Ordering::Relaxed);
+    let mut pattern = PATTERN.lock().unwrap();
+    pattern.width = width;
+    pattern.height = next_rows.len();
+    pattern.rows = next_rows;
+    drop(pattern);
+
+    CURRENT_CHUNK_START_ROW.store(start_row, std::sync::atomic::Ordering::Relaxed);
+    ROWS_IN_CURRENT_CHUNK.store(0, std::sync::atomic::Ordering::Relaxed);
+    return true;
+}
+
+// Обновление только части паттерна (чанка) - для потоковой загрузки.
+// Оставляем эту функцию как совместимый helper, но основной путь — через NEXT_CHUNK_ROWS + swap_to_next_chunk().
+pub fn update_pattern_chunk(new_rows: Vec<Vec<bool>>, _start_row: usize, width: usize) {
+    let mut pattern = PATTERN.lock().unwrap();
     if pattern.rows.is_empty() || pattern.width != width {
         pattern.width = width;
-        pattern.height = CHUNK_SIZE; // всегда держим CHUNK_SIZE рядов в памяти
+        pattern.height = CHUNK_SIZE;
         pattern.rows = vec![vec![false; width]; CHUNK_SIZE];
     }
 
-    // Обновляем ряды по ЛОКАЛЬНЫМ индексам (0-3)
     for (i, row) in new_rows.into_iter().enumerate() {
-        let local_row_idx = i; // 0, 1, 2, 3 — локальный индекс внутри чанка
-        if local_row_idx < pattern.rows.len() {
-            pattern.rows[local_row_idx] = row;
+        if i < pattern.rows.len() {
+            pattern.rows[i] = row;
         }
     }
 

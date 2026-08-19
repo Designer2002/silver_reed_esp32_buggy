@@ -14,9 +14,8 @@ pub static CCP_LAST_STATE: AtomicBool = AtomicBool::new(true); // по умол�
 pub static PATTERN_START: AtomicI32 = AtomicI32::new(0);
 pub static PATTERN_END: AtomicI32 = AtomicI32::new(0);
 
-// ✅ Sequence counter для синхронизации KSL и CCP
+// ✅ Sequence counter для синхронизации событий в единой FIFO очереди
 pub static EVENT_SEQUENCE: AtomicU32 = AtomicU32::new(0);
-pub static LAST_KSL_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 // ✅ Tracking для отладки прошлых рядов
 // На какой игле начался ряд (KSL rise - вход в паттерн)
@@ -86,6 +85,8 @@ pub static NEXT_CHUNK_ROWS: std::sync::LazyLock<std::sync::Mutex<Option<Vec<Vec<
     std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 // Флаг: начальный чанк был запрошен при старте вязания
 pub static INITIAL_CHUNK_REQUESTED: AtomicBool = AtomicBool::new(false);
+// Временный следующий чанк, который будет активирован только на KSL FALL
+pub static NEXT_CHUNK_START_ROW: AtomicI32 = AtomicI32::new(0);
 
 // ✅ Для отправки информации о ряде на сервер
 pub static ROW_INFO_PENDING: AtomicBool = AtomicBool::new(false);
