@@ -1,44 +1,70 @@
-use esp_idf_hal::task::thread::ThreadSpawnConfiguration;
-use esp_idf_svc::{
-    eventloop::EspSystemEventLoop,
-    http::server::EspHttpServer,
-    log::EspLogger,
-    nvs::EspDefaultNvsPartition,
-    wifi::{BlockingWifi, EspWifi},
-};
-use esp_idf_sys::{esp_wifi_set_ps, gpio_install_isr_service, link_patches, wifi_ps_type_t_WIFI_PS_NONE};
+use esp_idf_hal::{ task::thread::ThreadSpawnConfiguration};
+use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
+use esp_idf_hal::prelude::Peripherals;
+use esp_idf_sys::{gpio_install_isr_service, link_patches};
 use log::info;
 
 use crate::{
-    gpio::init_pins, pattern::PATTERN, state::{HEIGHT, WIDTH}, tasks::{engine_task, init_knitter, logger_task}, web::connect_wifi
+    gpio::init_pins, tasks::{client_task, engine_task, init_knitter, logger_task}
 };
-use core::sync::atomic::Ordering;
 use std::ptr::null_mut;
 
+mod client;
 mod gpio;
+mod knit_state;
 mod logger;
 mod pattern;
 mod state;
 mod tasks;
-mod web;
 mod queue;
+mod web;
 mod isr;
 
 fn main() -> anyhow::Result<()> {
     link_patches();
-    EspLogger::initialize_default();
+    esp_idf_svc::log::EspLogger::initialize_default();
     log::set_max_level(log::LevelFilter::Debug);
-    WIDTH.store(PATTERN.width, Ordering::Relaxed);
-    HEIGHT.store(PATTERN.height, Ordering::Relaxed);
+    
+
+    //wifi
+    let peripherals = Peripherals::take().unwrap();
+    let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take()?;
+    let nvs = esp_idf_svc::nvs::EspDefaultNvsPartition::take().unwrap();
+    let nvs_knit = nvs.clone(); // ✅ Клонируем для knit_state
+    let mut wifi = BlockingWifi::wrap(
+            EspWifi::new(peripherals.modem, sysloop.clone(), Some(nvs))?,
+            sysloop,
+        )?;
+    web::connect_wifi(&mut wifi)?;
+    client::init_server_ip("192.168.1.101");
     init_pins();
+
+    // ✅ Инициализация NVS для сохранения прогресса вязания
+    knit_state::init_knit_nvs(nvs_knit);
+
+    // ✅ Проверяем есть ли сохранённый прогресс
+    if let Some((global_row, chunk_start, rows_in_chunk)) = knit_state::restore_progress() {
+        // Восстанавливаем состояние
+        crate::state::ROW.store(global_row, std::sync::atomic::Ordering::Relaxed);
+        crate::state::GLOBAL_ROW.store(global_row, std::sync::atomic::Ordering::Relaxed);
+        crate::state::CURRENT_CHUNK_START_ROW.store(chunk_start, std::sync::atomic::Ordering::Relaxed);
+        crate::state::ROWS_IN_CURRENT_CHUNK.store(rows_in_chunk, std::sync::atomic::Ordering::Relaxed);
+        info!("Resuming from saved progress: row={}", global_row);
+    } else {
+        info!("Starting fresh - no saved progress");
+    }
+
     unsafe {
         gpio_install_isr_service(0);
     }
     init_knitter();
 
-    // Thread name must be a valid C string (null-terminated, no embedded nulls)
+    info!("Starting knitting machine with streaming pattern...");
+    info!("Server IP: {}", client::get_server_ip());
+
+    // Thread 1: engine (вязание)
     ThreadSpawnConfiguration {
-        name: Some(b"thread1\0"), // for knit thread
+        name: Some(b"engine\0"),
         stack_size: 4096,
         priority: 24,
         ..Default::default()
@@ -52,8 +78,9 @@ fn main() -> anyhow::Result<()> {
         })
         .unwrap();
 
+    // Thread 2: logger
     ThreadSpawnConfiguration {
-        name: Some(b"thread2\0"), // for log thread
+        name: Some(b"logger\0"),
         stack_size: 4096,
         priority: 10,
         ..Default::default()
@@ -67,20 +94,23 @@ fn main() -> anyhow::Result<()> {
         })
         .unwrap();
 
-    let peripherals = esp_idf_hal::peripherals::Peripherals::take().unwrap();
-    let sysloop = EspSystemEventLoop::take()?;
-    let nvs = EspDefaultNvsPartition::take()?;
-    let mut wifi = BlockingWifi::wrap(
-        EspWifi::new(peripherals.modem, sysloop.clone(), Some(nvs))?,
-        sysloop,
-    )?;
-    unsafe { esp_wifi_set_ps(wifi_ps_type_t_WIFI_PS_NONE) };
-    connect_wifi(&mut wifi)?;
-    let mut server = EspHttpServer::new(&Default::default()).unwrap();
-    web::init_server(&mut server)?;
-    info!("Server started");
-    core::mem::forget(wifi);
-    core::mem::forget(server);
+    // Thread 3: client (загрузка паттерна)
+    ThreadSpawnConfiguration {
+        name: Some(b"client\0"),
+        stack_size: 32768,
+        priority: 10,
+        ..Default::default()
+    }
+    .set()
+    .unwrap();
+
+    let client_thread = std::thread::Builder::new()
+        .spawn(move || {
+            let client = unsafe { client::create_client() };
+            client_task(null_mut(), client);
+        })
+        .unwrap();
+    
     std::thread::park();
     Ok(())
 }

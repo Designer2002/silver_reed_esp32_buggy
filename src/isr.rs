@@ -1,99 +1,140 @@
 
 use crate::queue::{EVT_CCP, EVT_HOK, EVT_KSL, EVT_ND1, QUEUE};
 use crate::state::{
-    CCP, CCP_LAST_TICK_US, CCP_MIN_INTERVAL_US, EVENT_SEQUENCE, HOK, KSL, KSL_DEBOUNCE_MS,
-    KSL_FALL_DEBOUNCE_UNTIL, KSL_LAST_STATE, KSL_RISE_DEBOUNCE_UNTIL, ND1,
+    CCP, CCP_AUTO_PASS_US, CCP_AUTO_REJECT_US, CCP_AVG_INTERVAL_US, CCP_FILTER_RESET, CCP_INTERVAL_COUNT, CCP_INTERVAL_SUM, CCP_LAST_STATE, CCP_LAST_TICK_US, CCP_MAX_RATIO, CCP_MIN_RATIO, EVENT_SEQUENCE, HOK, HOK_LAST_DEBOUNCE_US, HOK_LAST_STATE, KSL, KSL_HOK_DEBOUNCE_US, KSL_LAST_DEBOUNCE_US, KSL_LAST_STATE, ND1
 };
 use std::sync::atomic::Ordering;
 
-// ✅ Глобальное состояние для debounce CCP (аппаратный фильтр)
-static CCP_LAST_LEVEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 extern "C" fn ccp_isr(_: *mut core::ffi::c_void) {
-    // ✅ Читаем текущий уровень CCP
     let current_level = unsafe { (esp_idf_sys::GPIO.in_ >> CCP) & 0x1 != 0 };
-    let last_level = CCP_LAST_LEVEL.load(Ordering::Relaxed);
-    
-    // ✅ Реагируем ТОЛЬКО на восходящий фронт (rising edge)
+    let last_level = CCP_LAST_STATE.load(Ordering::Relaxed);
+
+    // ✅ Только rising edge
     if !current_level || last_level {
-        CCP_LAST_LEVEL.store(current_level, Ordering::Relaxed);
-        return; // Не rising edge — игнорируем
+        CCP_LAST_STATE.store(current_level, Ordering::Relaxed);
+        return;
     }
-    
-    CCP_LAST_LEVEL.store(current_level, Ordering::Relaxed);
-    
-    // ✅ CCP Debounce: проверяем что прошло достаточно времени
+    CCP_LAST_STATE.store(current_level, Ordering::Relaxed);
+
     let now_us = unsafe { esp_idf_sys::esp_timer_get_time() } as u32;
     let last_tick = CCP_LAST_TICK_US.load(Ordering::Relaxed);
-    
-    if now_us - last_tick < CCP_MIN_INTERVAL_US {
-        return; // 🚫 Слишком быстро — помеха
+    let interval = now_us.saturating_sub(last_tick);
+
+    // ✅ Сброс фильтра при входе в зону
+    if CCP_FILTER_RESET.load(Ordering::Relaxed) {
+        CCP_FILTER_RESET.store(false, Ordering::Relaxed);
+        CCP_INTERVAL_SUM.store(0, Ordering::Relaxed);
+        CCP_INTERVAL_COUNT.store(0, Ordering::Relaxed);
+        CCP_AVG_INTERVAL_US.store(0, Ordering::Relaxed);
+        CCP_LAST_TICK_US.store(now_us, Ordering::Relaxed);
+        return; // Пропускаем первый тик после сброса
     }
-    
+
+    // ✅ Автоотклонение: < 30μs = точно помеха
+    if last_tick > 0 && interval < CCP_AUTO_REJECT_US {
+        return;
+    }
+
+    // ✅ Автопропуск: > 200μs = точно реальный тик
+    if last_tick == 0 || interval > CCP_AUTO_PASS_US {
+        CCP_LAST_TICK_US.store(now_us, Ordering::Relaxed);
+        // Обновляем среднее
+        let sum = CCP_INTERVAL_SUM.fetch_add(interval, Ordering::Relaxed) + interval;
+        let count = CCP_INTERVAL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        CCP_AVG_INTERVAL_US.store(sum / count, Ordering::Relaxed);
+
+        let seq = EVENT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+        let _ = QUEUE.send_back((EVT_CCP, seq), 1u32);
+        return;
+    }
+
+    // ✅ Средний диапазон: avg/3 .. avg*3
+    let avg = CCP_AVG_INTERVAL_US.load(Ordering::Relaxed);
+    if avg > 0 {
+        let min_valid = avg / CCP_MIN_RATIO;
+        let max_valid = avg * CCP_MAX_RATIO;
+        if interval < min_valid || interval > max_valid {
+            return; // 🚫 Шум
+        }
+    }
+
+    // ✅ Реальный тик — обновляем среднее и отправляем
     CCP_LAST_TICK_US.store(now_us, Ordering::Relaxed);
-    
-    // ✅ Захватываем sequence number в момент прерывания
+    let sum = CCP_INTERVAL_SUM.fetch_add(interval, Ordering::Relaxed) + interval;
+    let count = CCP_INTERVAL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    CCP_AVG_INTERVAL_US.store(sum / count, Ordering::Relaxed);
+
+    // ✅ DEBUG: логируем каждые 50 тиков
+    static DEBUG_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let cnt = DEBUG_COUNTER.fetch_add(1, Ordering::Relaxed);
+    if cnt % 50 == 0 {
+        let a = CCP_AVG_INTERVAL_US.load(Ordering::Relaxed);
+        let c = CCP_INTERVAL_COUNT.load(Ordering::Relaxed);
+        let msg = format!("CCP: avg={}μs interval={}μs count={}", a, interval, c);
+        crate::logger::log("DEBUG", &msg);
+        drop(msg);
+    }
+
     let seq = EVENT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-    let _ = QUEUE.send_front((EVT_CCP, seq), 1u32);
+    let _ = QUEUE.send_back((EVT_CCP, seq), 1u32);
 }
 
 extern "C" fn nd1_isr(_: *mut core::ffi::c_void) {
     let seq = EVENT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-    let _ = QUEUE.send_front((EVT_ND1, seq), 1u32);
+    let _ = QUEUE.send_back((EVT_ND1, seq), 1u32);
 }
 
 extern "C" fn ksl_isr(_: *mut core::ffi::c_void) {
-    // ✅ Читаем текущее состояние KSL
+    let now_us = unsafe { esp_idf_sys::esp_timer_get_time() } as u32;
     let ksl_state = unsafe { (esp_idf_sys::GPIO.in_ >> KSL) & 0x1 != 0 };
-    let last_state = crate::state::KSL_LAST_STATE.load(Ordering::Relaxed);
-    
-    // ✅ Определяем направление изменения
-    let is_rise = ksl_state && !last_state;  // false → true
-    let is_fall = !ksl_state && last_state;  // true → false
-    
-    // ✅ Сохраняем состояние для следующего раза
-    crate::state::KSL_LAST_STATE.store(ksl_state, Ordering::Relaxed);
-    
-    // ✅ Debounce: проверяем, не прошло ли слишком мало времени
-    let now_ms = unsafe { esp_idf_sys::esp_timer_get_time() } as u32 / 1000;
-    
-    let debounce_until = if is_rise {
-        KSL_RISE_DEBOUNCE_UNTIL.load(Ordering::Relaxed)
-    } else if is_fall {
-        KSL_FALL_DEBOUNCE_UNTIL.load(Ordering::Relaxed)
-    } else {
-        0; // Нет изменения — не должно случиться
-        return;
-    };
-    
-    if now_ms < debounce_until {
-        return; // 🚫 Дребезг, игнорируем
+    let last_state = KSL_LAST_STATE.load(Ordering::Relaxed);
+
+    // ✅ Проверяем debounce (20ms)
+    let last_debounce = KSL_LAST_DEBOUNCE_US.load(Ordering::Relaxed);
+    if now_us - last_debounce < KSL_HOK_DEBOUNCE_US {
+        return; // 🚫 Дребезг
     }
-    
-    // ✅ Устанавливаем следующее допустимое время срабатывания
-    if is_rise {
-        KSL_RISE_DEBOUNCE_UNTIL.store(now_ms + KSL_DEBOUNCE_MS, Ordering::Relaxed);
-    } else if is_fall {
-        KSL_FALL_DEBOUNCE_UNTIL.store(now_ms + KSL_DEBOUNCE_MS, Ordering::Relaxed);
+
+    // ✅ Если состояние изменилось — отправляем
+    if ksl_state != last_state {
+        KSL_LAST_STATE.store(ksl_state, Ordering::Relaxed);
+        KSL_LAST_DEBOUNCE_US.store(now_us, Ordering::Relaxed);
+
+        crate::state::KSL_LAST_STATE.store(ksl_state, Ordering::Relaxed);
+        let seq = EVENT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+        crate::state::LAST_KSL_SEQUENCE.store(seq, Ordering::SeqCst);
+        let _ = QUEUE.send_back((EVT_KSL, seq), 1u32);
     }
-    
-    // ✅ Захватываем sequence number и сохраняем как последний KSL
-    let seq = EVENT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-    crate::state::LAST_KSL_SEQUENCE.store(seq, Ordering::SeqCst);
-    let _ = QUEUE.send_front((EVT_KSL, seq), 1u32);
 }
 
 extern "C" fn hok_isr(_: *mut core::ffi::c_void) {
-    let seq = EVENT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-    let _ = QUEUE.send_front((EVT_HOK, seq), 1u32);
+    let now_us = unsafe { esp_idf_sys::esp_timer_get_time() } as u32;
+    let hok_state = unsafe { (esp_idf_sys::GPIO.in_ >> HOK) & 0x1 != 0 };
+    let last_state = HOK_LAST_STATE.load(Ordering::Relaxed);
+
+    // ✅ Проверяем debounce (20ms)
+    let last_debounce = HOK_LAST_DEBOUNCE_US.load(Ordering::Relaxed);
+    if now_us - last_debounce < KSL_HOK_DEBOUNCE_US {
+        return; // 🚫 Дребезг
+    }
+
+    // ✅ Если состояние изменилось — отправляем
+    if hok_state != last_state {
+        HOK_LAST_STATE.store(hok_state, Ordering::Relaxed);
+        HOK_LAST_DEBOUNCE_US.store(now_us, Ordering::Relaxed);
+
+        let seq = EVENT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+        let _ = QUEUE.send_back((EVT_HOK, seq), 1u32);
+    }
 }
 
 pub fn install_isrs() {
     unsafe {
         esp_idf_sys::gpio_set_intr_type(CCP, esp_idf_sys::gpio_int_type_t_GPIO_INTR_ANYEDGE);
-        esp_idf_sys::gpio_set_intr_type(ND1, esp_idf_sys::gpio_int_type_t_GPIO_INTR_ANYEDGE);
         esp_idf_sys::gpio_set_intr_type(KSL, esp_idf_sys::gpio_int_type_t_GPIO_INTR_ANYEDGE);
         esp_idf_sys::gpio_set_intr_type(HOK, esp_idf_sys::gpio_int_type_t_GPIO_INTR_ANYEDGE);
+        esp_idf_sys::gpio_set_intr_type(ND1, esp_idf_sys::gpio_int_type_t_GPIO_INTR_ANYEDGE);
 
         esp_idf_sys::gpio_isr_handler_add(CCP, Some(ccp_isr), core::ptr::null_mut());
         esp_idf_sys::gpio_isr_handler_add(ND1, Some(nd1_isr), core::ptr::null_mut());
@@ -101,11 +142,12 @@ pub fn install_isrs() {
         esp_idf_sys::gpio_isr_handler_add(HOK, Some(hok_isr), core::ptr::null_mut());
     }
 }
+
 pub fn uninstall_isrs() {
     unsafe {
         esp_idf_sys::gpio_isr_handler_remove(CCP);
-        esp_idf_sys::gpio_isr_handler_remove(HOK);
-        esp_idf_sys::gpio_isr_handler_remove(KSL);
         esp_idf_sys::gpio_isr_handler_remove(ND1);
+        esp_idf_sys::gpio_isr_handler_remove(KSL);
+        esp_idf_sys::gpio_isr_handler_remove(HOK);
     }
 }

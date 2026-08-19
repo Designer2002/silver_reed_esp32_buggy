@@ -1,9 +1,10 @@
 use crate::logger::log;
 use crate::pattern::pattern_get;
-use crate::state::*;
+use crate::state::{self, *};
 use crate::tasks::delay_us;
-use esp_idf_sys::GPIO;
+use esp_idf_sys::{GPIO, TICKS_PER_US_ROM};
 use std::sync::atomic::Ordering;
+
 
 #[inline(always)]
 fn dob_set_if_changed(new_state: bool) {
@@ -94,13 +95,12 @@ pub fn on_ksl_change(_seq: u32) {
     // ✅ Читаем АКТУАЛЬНОЕ состояние KSL прямо из регистра
     // Это важно потому что ISR мог отфильтровать дребезг
     let ksl_state = unsafe { (GPIO.in_ >> KSL) & 0x1 } != 0;
-    
+
     let old_inside = INSIDE_PATTERN.load(Ordering::Relaxed);
-    
+
     // ✅ Обрабатываем только если состояние действительно изменилось
     if old_inside != ksl_state {
         INSIDE_PATTERN.store(ksl_state, Ordering::Relaxed);
-        
         if ksl_state {
             // Вход в зону паттерна (KSL rise: false → true)
             if DIR_RIGHT.load(Ordering::Relaxed) {
@@ -108,57 +108,103 @@ pub fn on_ksl_change(_seq: u32) {
             } else {
                 NEEDLE.store(PATTERN_END.load(Ordering::Relaxed), Ordering::Relaxed);
             }
+            ROW_START_NEEDLE.store(NEEDLE.load(Ordering::Relaxed), Ordering::Relaxed);
+            let rows = ROWS_IN_CURRENT_CHUNK.load(Ordering::Relaxed);
+            let dir = DIR_RIGHT.load(Ordering::Relaxed);
+            let needle = ROW_START_NEEDLE.load(Ordering::Relaxed);
+            let msg = format!("KSL RISE: needle={}, rows_in_chunk={}, dir={}", needle, rows, if dir { "RIGHT" } else { "LEFT" });
+            log("DEBUG", &msg);
+            drop(msg);
+
+            // ✅ Сбрасываем CCP фильтр при входе в паттерн
+            ccp_filter_reset_on_ksl_rise();
+            
+            // ✅ Запрашиваем отправку информации о ряде на сервер (без HTTP!)
+            crate::client::queue_row_info(ROW.load(Ordering::Relaxed), dir);
         } else {
+            let dir = DIR_RIGHT.load(Ordering::Relaxed);
+            ROW_END_NEEDLE.store(NEEDLE.load(Ordering::Relaxed), Ordering::Relaxed);
             // Выход из зоны паттерна (KSL fall: true → false)
-            if DIR_RIGHT.load(Ordering::Relaxed) {
-                PATTERN_END.store(
-                    NEEDLE.load(Ordering::Relaxed).saturating_sub(1),
-                    Ordering::Relaxed,
-                );
-            } else {
-                PATTERN_START.store(
-                    0,
-                    Ordering::Relaxed,
-                );
+            // ✅ НЕ обновляем PATTERN_START/END каждый ряд — они фиксированные!
+            // Границы задаются один раз при start_knitting и не меняются
+            // Это предотвращает "уплывание" узора из-за механического люфта
+            let needle = ROW_END_NEEDLE.load(Ordering::Relaxed);
+            let msg = format!("KSL FALL: needle={}, dir={}, PATTERN_START={}, PATTERN_END={}", 
+                needle, if dir { "RIGHT" } else { "LEFT" },
+                PATTERN_START.load(Ordering::Relaxed),
+                PATTERN_END.load(Ordering::Relaxed));
+            log("DEBUG", &msg);
+            drop(msg);
+
+            // Смена ряда
+            let old_row = ROW.fetch_add(1, Ordering::SeqCst);
+            let new_row = old_row + 1;
+            
+            // Обновляем глобальный счетчик рядов
+            GLOBAL_ROW.store(new_row, Ordering::Relaxed);
+            let msg = format!("В ряду {} игла {} → {}", new_row, ROW_START_NEEDLE.load(Ordering::Relaxed), ROW_END_NEEDLE.load(Ordering::Relaxed));
+            log("INFO", &msg);
+            drop(msg);
+            // Считаем ряды в текущем чанке
+            let rows_in_chunk = ROWS_IN_CURRENT_CHUNK.fetch_add(1, Ordering::Relaxed) + 1;
+
+            // Если это 4-й ряд в чанке (rows_in_chunk == 4), ставим флаг запроса
+            // Так мы успеем загрузить следующий чанк пока вяжем 4-й ряд
+            if rows_in_chunk == 4 {
+                REQUEST_NEW_CHUNK.store(true, Ordering::Relaxed);
             }
             
-            ROW.fetch_add(1, Ordering::SeqCst);    
-            dob_set_high_fast();
+            // Если достигли конца чанка (4 ряда), сбрасываем счетчик
+            if rows_in_chunk >= CHUNK_SIZE as i32 {
+                ROWS_IN_CURRENT_CHUNK.store(0, Ordering::Relaxed);
+            }
+
+            // ✅ Сохраняем прогресс в NVS
+            let gr = GLOBAL_ROW.load(Ordering::Relaxed);
+            let cs = CURRENT_CHUNK_START_ROW.load(Ordering::Relaxed);
+            let ric = ROWS_IN_CURRENT_CHUNK.load(Ordering::Relaxed);
+            crate::knit_state::save_progress(gr, cs, ric);
+
+            dob_set_if_changed(true); 
         }
     }
 }
 
 #[inline(always)]
 pub fn on_ccp_tick_fast(ccp_seq: u32) {
-    // ✅ Проверяем INSIDE_PATTERN здесь, до обработки
     let inside = INSIDE_PATTERN.load(Ordering::Relaxed);
     let ksl_seq = LAST_KSL_SEQUENCE.load(Ordering::SeqCst);
-    
-    // ✅ Игнорируем CCP если он был ДО или во время последнего KSL fall
-    // Это "хвостовые" тики от предыдущего ряда
+
     if ccp_seq <= ksl_seq {
         dob_set_high_fast();
         return;
     }
-    
+
     if inside {
-        // ✅ CCP тик — это уже rising edge, просто считаем иглу
+        let needle = NEEDLE.load(Ordering::Relaxed);
         if DIR_RIGHT.load(Ordering::Relaxed) {
             NEEDLE.fetch_add(1, Ordering::Relaxed);
         } else {
             NEEDLE.fetch_sub(1, Ordering::Relaxed);
         }
-        let row = ROW.load(Ordering::Relaxed);
-        let needle = NEEDLE.load(Ordering::Relaxed);
+
+        let rows_in_chunk = ROWS_IN_CURRENT_CHUNK.load(Ordering::Relaxed);
+        let local_row = rows_in_chunk % CHUNK_SIZE as i32;
+        let should_fire = pattern_get(local_row, needle);
         
-        // ✅ Инвертируем полярность DOB для правильного контраста
-        // . (точка) = фон, # (решетка) = узор
-        let should_fire = pattern_get(row, needle);
-        if !should_fire {
-            dob_set_low_fast(); // Соленоид включается для узора
-        } else {
-            dob_set_high_fast(); // Соленоид выключен для фона
-        }
+        dob_set_if_changed(should_fire);
+        
+        // ✅ Читаем новое состояние DOB после установки
+        let actual_fire = unsafe { (esp_idf_sys::GPIO.out >> DOB) & 0x1 } == 0; // LOW = соленоид ON
+        
+        // ✅ Записываем в очередь (lock-free, безопасно из ISR)
+        let hit = crate::state::SolenoidHit {
+            row: ROW.load(Ordering::Relaxed),
+            needle,
+            actual_fire,
+            direction: DIR_RIGHT.load(Ordering::Relaxed),
+        };
+        let _ = crate::state::SOLENOID_HITS.send_back(hit, TICKS_PER_US_ROM * 1000); // таймаут 1 мс, чтобы не блокировать ISR
     } else {
         dob_set_high_fast();
     }
@@ -166,13 +212,17 @@ pub fn on_ccp_tick_fast(ccp_seq: u32) {
 
 #[inline(always)]
 pub fn on_hok_change_fast(level: bool) {
-    // Пропускаем, если уровень не изменился (защита от дребезга)
-    let last = HOK_LAST_LEVEL.load(Ordering::Relaxed);
-    if level == last {
+    // ✅ Защита от подёргивания: проверяем что прошло достаточно времени
+    // с последней смены направления
+    let now_us = unsafe { esp_idf_sys::esp_timer_get_time() } as u32;
+    let last_dir_change = state::HOK_DIR_CHANGE_DEBOUNCE_US.load(Ordering::Relaxed);
+    if last_dir_change > 0 && now_us - last_dir_change < state::MIN_DIR_CHANGE_INTERVAL_US {
+        // 🚫 Подёргивание — игнорируем смену направления
         return;
     }
-    HOK_LAST_LEVEL.store(level, Ordering::Relaxed);
+    state::HOK_DIR_CHANGE_DEBOUNCE_US.store(now_us, Ordering::Relaxed);
 
+    // ✅ Debounce уже сделан в ISR, здесь просто обрабатываем направление
     let dir = level;
     DIR_RIGHT.store(dir, Ordering::Relaxed);
 
@@ -191,8 +241,9 @@ pub fn on_nd1_falling_fast() {
         log("DEBUG", "ND1: reset needle to 0 (RIGHT)");
     } else {
         NEEDLE.store(width - 1, Ordering::Relaxed);
-        let msg = format!("ND1: reset needle to {} (LEFT)", width - 1).leak();
-        log("DEBUG", msg);
+        let msg = format!("ND1: reset needle to {} (LEFT)", width - 1);
+        log("DEBUG", &msg);
+        drop(msg);
     }
 
     // ✅ На ND1 тоже выключаем соленоид для безопасности

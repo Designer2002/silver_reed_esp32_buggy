@@ -14,20 +14,19 @@ static LOG_QUEUE: LogQueue = LogQueue {
 };
 static WEB_LOGS: Mutex<Vec<LogEntry>> = Mutex::new(Vec::new());
 
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct LogEntry {
-    pub timestamp: &'static str, // Ссылка на строку, живущую всю программу
-    pub level: &'static str,
-    pub message: &'static str,
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
 }
 
 impl LogEntry {
-    pub fn new(t: &'static str, lvl: &'static str, msg: &'static str) -> Self {
+    pub fn new(timestamp: String, level: String, message: String) -> Self {
         Self {
-            timestamp: t,
-            level: lvl,
-            message: msg,
+            timestamp,
+            level,
+            message,
         }
     }
 }
@@ -35,11 +34,12 @@ impl LogEntry {
 impl LogQueue {
     /// Push a log entry. If full, drops the oldest log.
     pub fn push(&self, entry: LogEntry) {
+        let entry_clone = entry.clone();
         // SAFETY: Only one producer (main or ISR)
         let queue = unsafe { &mut *self.queue.get() };
         if queue.enqueue(entry).is_err() {
             queue.dequeue();
-            let _ = queue.enqueue(entry);
+            let _ = queue.enqueue(entry_clone);
         }
     }
 
@@ -57,26 +57,58 @@ impl LogQueue {
     }
 }
 
-/// Log from ISR or main context. Timestamp must be 'static.
+/// Log from ISR or main context.
 pub fn log_from_isr(entry: LogEntry) {
     LOG_QUEUE.push(entry);
 }
 
-/// Log from main context, with timestamp generated.
-pub fn log(level: &'static str, msg: &'static str) {
+/// Логирование с поддержкой разных типов
+pub fn log(level: &str, msg: impl AsRef<str>) {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let timestamp = format!("{}.{}", now.as_secs(), now.subsec_millis());
-    let timestamp_static = Box::leak(timestamp.into_boxed_str());
-    let entry = LogEntry::new(timestamp_static, level, msg);
+    
+    let entry = LogEntry::new(
+        timestamp,
+        level.to_string(),
+        msg.as_ref().to_string()
+    );
+    
     log_from_isr(entry);
+}
+
+/// Логирование с форматированием (как println!)
+#[macro_export]
+macro_rules! log_fmt {
+    ($level:expr, $($arg:tt)*) => {
+        log($level, &format!($($arg)*))
+    };
+}
+
+/// Логирование ошибок
+pub fn log_error(msg: impl AsRef<str>) {
+    log("ERROR", msg);
+}
+
+/// Логирование информации
+pub fn log_info(msg: impl AsRef<str>) {
+    log("INFO", msg);
+}
+
+/// Логирование отладки
+pub fn log_debug(msg: impl AsRef<str>) {
+    log("DEBUG", msg);
+}
+
+/// Логирование предупреждений
+pub fn log_warn(msg: impl AsRef<str>) {
+    log("WARN", msg);
 }
 
 /// Pop a log entry (for server/consumer).
 pub fn pop_log() -> Option<LogEntry> {
     LOG_QUEUE.pop()
 }
-
 
 pub fn push_web_log(entry: LogEntry) {
     let mut logs = WEB_LOGS.lock().unwrap();
@@ -91,3 +123,4 @@ pub fn push_web_log(entry: LogEntry) {
 pub fn get_logs() -> Vec<LogEntry> {
     WEB_LOGS.lock().unwrap().clone()
 }
+
