@@ -47,10 +47,10 @@ extern "C" fn ccp_isr(_: *mut core::ffi::c_void) {
         let evt = crate::queue::EngineEvent {
             kind: EVT_CCP,
             seq,
-            timestamp_us: now_us as u64,
+            timestamp_us: now_us,
             level: current_level,
         };
-        let _ = QUEUE.send_back(evt, 0u32);
+        let _ = QUEUE.send_back_isr(evt);
         return;
     }
 
@@ -68,60 +68,52 @@ extern "C" fn ccp_isr(_: *mut core::ffi::c_void) {
     let count = CCP_INTERVAL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     CCP_AVG_INTERVAL_US.store(sum / count, Ordering::Relaxed);
 
-    static DEBUG_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let cnt = DEBUG_COUNTER.fetch_add(1, Ordering::Relaxed);
-    if cnt % 50 == 0 {
-        let a = CCP_AVG_INTERVAL_US.load(Ordering::Relaxed);
-        let c = CCP_INTERVAL_COUNT.load(Ordering::Relaxed);
-        let msg = format!("CCP: avg={}μs interval={}μs count={}", a, interval, c);
-        crate::logger::log("DEBUG", &msg);
-        drop(msg);
-    }
-
+    // 🚫 Никогда не делаем format! / String внутри ISR.
+    // Это вызывает heap churn и может повреждать память на ESP32.
     let seq = EVENT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
     let evt = crate::queue::EngineEvent {
         kind: EVT_CCP,
         seq,
-        timestamp_us: now_us as u64,
+        timestamp_us: now_us,
         level: current_level,
     };
-    let _ = QUEUE.send_back(evt, 0u32);
+    let _ = QUEUE.send_back(evt);
 }
 
 extern "C" fn nd1_isr(_: *mut core::ffi::c_void) {
+    let now_us = unsafe { esp_idf_sys::esp_timer_get_time() } as u32;
     let seq = EVENT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
     let evt = crate::queue::EngineEvent {
         kind: EVT_ND1,
         seq,
-        timestamp_us: unsafe { esp_idf_sys::esp_timer_get_time() } as u64,
+        timestamp_us: now_us,
         level: false,
     };
-    let _ = QUEUE.send_back(evt, 0u32);
+    let _ = QUEUE.send_back_isr(evt);
 }
 
 extern "C" fn ksl_isr(_: *mut core::ffi::c_void) {
     let now_us = unsafe { esp_idf_sys::esp_timer_get_time() } as u32;
     let ksl_state = unsafe { (esp_idf_sys::GPIO.in_ >> KSL) & 0x1 != 0 };
     let last_state = KSL_LAST_STATE.load(Ordering::Relaxed);
-
     let last_debounce = KSL_LAST_DEBOUNCE_US.load(Ordering::Relaxed);
-    if now_us - last_debounce < KSL_HOK_DEBOUNCE_US {
+
+    if now_us.saturating_sub(last_debounce) < KSL_HOK_DEBOUNCE_US {
         return;
     }
 
     if ksl_state != last_state {
         KSL_LAST_STATE.store(ksl_state, Ordering::Relaxed);
         KSL_LAST_DEBOUNCE_US.store(now_us, Ordering::Relaxed);
-        crate::state::KSL_LAST_STATE.store(ksl_state, Ordering::Relaxed);
 
         let seq = EVENT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
         let evt = crate::queue::EngineEvent {
             kind: EVT_KSL,
             seq,
-            timestamp_us: now_us as u64,
+            timestamp_us: now_us,
             level: ksl_state,
         };
-        let _ = QUEUE.send_back(evt, 0u32);
+        let _ = QUEUE.send_back_isr(evt);
     }
 }
 
@@ -143,10 +135,10 @@ extern "C" fn hok_isr(_: *mut core::ffi::c_void) {
         let evt = crate::queue::EngineEvent {
             kind: EVT_HOK,
             seq,
-            timestamp_us: now_us as u64,
+            timestamp_us: now_us,
             level: hok_state,
         };
-        let _ = QUEUE.send_back(evt, 0u32);
+        let _ = QUEUE.send_back_isr(evt);
     }
 }
 

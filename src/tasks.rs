@@ -13,25 +13,41 @@ use crate::{
 use esp_idf_hal::delay::FreeRtos;
 use log::info;
 use std::sync::atomic::Ordering;
-use std::{ffi::c_void, thread, time::Duration};
+use std::ffi::c_void;
 
 pub extern "C" fn engine_task(_: *mut c_void) {
     info!("Engine task started");
 
     loop {
-        let evt: Option<(crate::queue::EngineEvent, bool)> = QUEUE.recv_front(1u32);
+        let mut processed = 0usize;
 
-        if let Some((event, _)) = evt {
-            let _timestamp_us = event.timestamp_us;
-            if event.kind == EVT_CCP {
-                on_ccp_tick_fast(event.seq);
-            } else if event.kind == EVT_ND1 {
-                on_nd1_falling_fast();
-            } else if event.kind == EVT_KSL {
-                on_ksl_change(event.seq);
-            } else if event.kind == EVT_HOK {
-                on_hok_change_fast(event.level);
+        while processed < 32 {
+            match QUEUE.recv_front() {
+                Some(event) => {
+                    let _timestamp_us = event.timestamp_us;
+                    if event.kind == EVT_CCP {
+                        on_ccp_tick_fast(event.seq);
+                    } else if event.kind == EVT_ND1 {
+                        on_nd1_falling_fast();
+                    } else if event.kind == EVT_KSL {
+                        on_ksl_change(event.seq);
+                    } else if event.kind == EVT_HOK {
+                        on_hok_change_fast(event.level);
+                    }
+                    processed += 1;
+                }
+                None => break,
             }
+        }
+
+        if state::CHUNK_SWAP_PENDING.swap(false, Ordering::AcqRel) {
+            let _ = crate::pattern::swap_to_next_chunk();
+        }
+
+        if processed == 0 {
+            FreeRtos::delay_ms(1);
+        } else {
+            delay_us(100);
         }
     }
 }
@@ -60,7 +76,7 @@ pub extern "C" fn client_task(_: *mut c_void) {
         }
 
         // ✅ Отправляем информацию о ряде на сервер если pending
-        if state::ROW_INFO_PENDING.load(Ordering::Relaxed) {
+        if state::ROW_INFO_PENDING.load(Ordering::Acquire) {
             let row = state::ROW_INFO_ROW.load(Ordering::Relaxed);
             let dir = state::ROW_INFO_DIR.load(Ordering::Relaxed);
             if crate::client::send_queued_row_info() {
@@ -77,17 +93,14 @@ pub extern "C" fn client_task(_: *mut c_void) {
             } else {
                 log("WARN", "Failed to send row info");
             }
-            state::ROW_INFO_PENDING.store(false, Ordering::Relaxed);
+            state::ROW_INFO_PENDING.store(false, Ordering::Release);
         }
 
         // Принудительно чистим накопленные буферы и очереди, чтобы память не росла во время ретраев.
         crate::client::trim_memory();
 
-        // Отправляем один hit за 10 мс, чтобы не накапливать большой JSON и не переполнять стек.
-        let _ = crate::client::send_solenoid_hits();
-
-        // Небольшая задержка чтобы не занимать 100% CPU
-        thread::sleep(Duration::from_millis(10));
+        // Используем FreeRTOS delay: это корректно сбрасывает watchdog на ESP-IDF.
+        FreeRtos::delay_ms(10);
     }
 }
 
@@ -107,9 +120,9 @@ pub extern "C" fn logger_task(_: *mut c_void) {
         }
 
         if !had_logs {
-            thread::sleep(Duration::from_millis(20));
+            FreeRtos::delay_ms(20);
         } else {
-            thread::sleep(Duration::from_millis(2));
+            FreeRtos::delay_ms(2);
         }
     }
 }

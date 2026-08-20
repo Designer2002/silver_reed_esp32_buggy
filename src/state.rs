@@ -1,11 +1,11 @@
+use core::cell::UnsafeCell;
 use std::sync::{LazyLock, Mutex, atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering}};
-use esp_idf_hal::task::queue::Queue;
 use esp_idf_svc::nvs::{EspNvs, NvsDefault};
 
 pub static ROW: AtomicI32 = AtomicI32::new(0);
 pub static NEEDLE: AtomicI32 = AtomicI32::new(0);
 pub static DIR_RIGHT: AtomicBool = AtomicBool::new(true);
-pub static INSIDE_PATTERN: AtomicBool = AtomicBool::new(false);
+pub static INSIDE_PATTERN: AtomicBool = AtomicBool::new(true);
 pub static KNITTING: AtomicBool = AtomicBool::new(false);
 pub static WIDTH: AtomicUsize = AtomicUsize::new(0);
 pub static HEIGHT: AtomicUsize = AtomicUsize::new(0);
@@ -65,9 +65,18 @@ pub const HOK: i32 = 19;
 pub const KSL: i32 = 21;
 pub const ND1: i32 = 22;
 
-pub const BUFFER_SIZE: i32 = 4096 + 1; // Увеличен для поддержки широких узоров
-pub const MAX_HTTP_OUTPUT_BUFFER: usize = 2048;
+pub const BUFFER_SIZE: usize = 64 + 1; // Увеличен для поддержки широких узоров
+pub const MAX_HTTP_OUTPUT_BUFFER: usize = 8192;
 pub const CHUNK_SIZE: usize = 4; // рядов в одном чанке
+pub const MAX_ROW_HITS: usize = 512; // фиксированный лимит hits в одном ряде, чтобы не расти в heap
+pub const MAX_ROW_JSON_BYTES: usize = 4096; // фиксированный JSON на один ряд
+
+#[inline(always)]
+pub fn row_hit_capacity() -> usize {
+    let width = WIDTH.load(Ordering::Relaxed);
+    let row_width = width.max(1) as usize;
+    row_width.min(MAX_ROW_HITS)
+}
 
 // ✅ Для потоковой загрузки паттерна
 // Счетчик рядов с момента последней загрузки чанка
@@ -87,6 +96,7 @@ pub static NEXT_CHUNK_ROWS: std::sync::LazyLock<std::sync::Mutex<Option<Vec<Vec<
 pub static INITIAL_CHUNK_REQUESTED: AtomicBool = AtomicBool::new(false);
 // Временный следующий чанк, который будет активирован только на KSL FALL
 pub static NEXT_CHUNK_START_ROW: AtomicI32 = AtomicI32::new(0);
+pub static CHUNK_SWAP_PENDING: AtomicBool = AtomicBool::new(false);
 
 // ✅ Для отправки информации о ряде на сервер
 pub static ROW_INFO_PENDING: AtomicBool = AtomicBool::new(false);
@@ -121,6 +131,60 @@ pub struct SolenoidHit {
     pub direction: bool, // true = RIGHT
 }
 
-// Lock-free ring buffer для ISR → main task
-// 2048 событий = ~24 KB — нормально для ESP32
-pub static SOLENOID_HITS: LazyLock<Queue<SolenoidHit>> = LazyLock::new(|| Queue::new(2048));
+// Фиксированный буфер hits только для текущего ряда.
+// Не держим весь массив в heap и не растём динамически по мере работы.
+pub static CURRENT_ROW_HITS: LazyLock<Mutex<heapless::Vec<SolenoidHit, MAX_ROW_HITS>>> =
+    LazyLock::new(|| Mutex::new(heapless::Vec::new()));
+
+// Single-producer / single-consumer ring buffer for hot-path solenoid hits.
+// No requeueing for mismatched rows. The producer is the ISR and the consumer is the task.
+pub struct SolenoidHitRing {
+    storage: UnsafeCell<[core::mem::MaybeUninit<SolenoidHit>; 256]>,
+    head: AtomicUsize,
+    tail: AtomicUsize,
+}
+
+unsafe impl Sync for SolenoidHitRing {}
+
+impl SolenoidHitRing {
+    #[inline(always)]
+    pub fn new() -> Self {
+        Self {
+            storage: UnsafeCell::new(core::array::from_fn(|_| core::mem::MaybeUninit::uninit())),
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+        }
+    }
+
+    #[inline(always)]
+    pub fn send_back(&self, value: SolenoidHit) -> Result<(), SolenoidHit> {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+        if ((head + 1) % 256) == tail {
+            return Err(value);
+        }
+
+        unsafe {
+            let slot = &mut (*self.storage.get())[head];
+            slot.write(value);
+        }
+
+        self.head.store((head + 1) % 256, Ordering::Release);
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub fn recv_front(&self) -> Option<SolenoidHit> {
+        let tail = self.tail.load(Ordering::Relaxed);
+        let head = self.head.load(Ordering::Acquire);
+        if tail == head {
+            return None;
+        }
+
+        let value = unsafe { (*self.storage.get())[tail].assume_init_read() };
+        self.tail.store((tail + 1) % 256, Ordering::Release);
+        Some(value)
+    }
+}
+
+pub static SOLENOID_HITS: LazyLock<SolenoidHitRing> = LazyLock::new(SolenoidHitRing::new);

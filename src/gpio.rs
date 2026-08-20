@@ -97,18 +97,9 @@ pub fn on_ksl_change(_seq: u32) {
                 NEEDLE.store(PATTERN_END.load(Ordering::Relaxed), Ordering::Relaxed);
             }
             ROW_START_NEEDLE.store(NEEDLE.load(Ordering::Relaxed), Ordering::Relaxed);
-            let rows = ROWS_IN_CURRENT_CHUNK.load(Ordering::Relaxed);
-            let dir = DIR_RIGHT.load(Ordering::Relaxed);
-            let needle = ROW_START_NEEDLE.load(Ordering::Relaxed);
-            let msg = format!("KSL RISE: needle={}, rows_in_chunk={}, dir={}", needle, rows, if dir { "RIGHT" } else { "LEFT" });
-            log("DEBUG", &msg);
-            drop(msg);
 
             // ✅ Сбрасываем CCP фильтр при входе в паттерн
             ccp_filter_reset_on_ksl_rise();
-            
-            // ✅ Запрашиваем отправку информации о ряде на сервер (без HTTP!)
-            crate::client::queue_row_info(ROW.load(Ordering::Relaxed), dir);
         } else {
             let dir = DIR_RIGHT.load(Ordering::Relaxed);
             ROW_END_NEEDLE.store(NEEDLE.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -116,13 +107,13 @@ pub fn on_ksl_change(_seq: u32) {
             // ✅ НЕ обновляем PATTERN_START/END каждый ряд — они фиксированные!
             // Границы задаются один раз при start_knitting и не меняются
             // Это предотвращает "уплывание" узора из-за механического люфта
-            let needle = ROW_END_NEEDLE.load(Ordering::Relaxed);
-            let msg = format!("KSL FALL: needle={}, dir={}, PATTERN_START={}, PATTERN_END={}", 
-                needle, if dir { "RIGHT" } else { "LEFT" },
-                PATTERN_START.load(Ordering::Relaxed),
-                PATTERN_END.load(Ordering::Relaxed));
-            log("DEBUG", &msg);
-            drop(msg);
+
+
+            // ✅ Завершаем текущий ряд только после фактического KSL FALL.
+            // Это гарантирует, что batch отправится только после завершения ряда,
+            // а не на старте паттерна.
+            let completed_row = ROW.load(Ordering::Relaxed);
+            crate::client::queue_row_info(completed_row, dir);
 
             // Смена ряда
             let old_row = ROW.fetch_add(1, Ordering::SeqCst);
@@ -130,9 +121,7 @@ pub fn on_ksl_change(_seq: u32) {
             
             // Обновляем глобальный счетчик рядов
             GLOBAL_ROW.store(new_row, Ordering::Relaxed);
-            let msg = format!("В ряду {} игла {} → {}", new_row, ROW_START_NEEDLE.load(Ordering::Relaxed), ROW_END_NEEDLE.load(Ordering::Relaxed));
-            log("INFO", &msg);
-            drop(msg);
+            log("INFO", "row completed");
             // Считаем ряды в текущем чанке
             let rows_in_chunk = ROWS_IN_CURRENT_CHUNK.fetch_add(1, Ordering::Relaxed) + 1;
 
@@ -143,21 +132,16 @@ pub fn on_ksl_change(_seq: u32) {
             }
 
             if rows_in_chunk >= CHUNK_SIZE as i32 {
-                if crate::pattern::swap_to_next_chunk() {
-                    let next_start = crate::state::NEXT_CHUNK_START_ROW.load(Ordering::Relaxed);
-                    CURRENT_CHUNK_START_ROW.store(next_start, Ordering::Relaxed);
-                    ROWS_IN_CURRENT_CHUNK.store(0, Ordering::Relaxed);
-                } else {
-                    ROWS_IN_CURRENT_CHUNK.store(0, Ordering::Relaxed);
-                }
+                state::CHUNK_SWAP_PENDING.store(true, Ordering::Release);
             }
 
             // ✅ Сохраняем прогресс в NVS
             let gr = GLOBAL_ROW.load(Ordering::Relaxed);
             let cs = CURRENT_CHUNK_START_ROW.load(Ordering::Relaxed);
             let ric = ROWS_IN_CURRENT_CHUNK.load(Ordering::Relaxed);
+            log("DEBUG", "saving progress to NVS");
             crate::knit_state::save_progress(gr, cs, ric);
-
+            log("DEBUG", "firing DOB");
             dob_set_if_changed(true); 
         }
     }
@@ -191,7 +175,7 @@ pub fn on_ccp_tick_fast(_ccp_seq: u32) {
             actual_fire,
             direction: DIR_RIGHT.load(Ordering::Relaxed),
         };
-        let _ = crate::state::SOLENOID_HITS.send_back(hit, TICKS_PER_US_ROM * 1000); // таймаут 1 мс, чтобы не блокировать ISR
+        let _ = crate::state::SOLENOID_HITS.send_back(hit);
     } else {
         dob_set_high_fast();
     }

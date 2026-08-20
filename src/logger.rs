@@ -1,10 +1,10 @@
-use heapless::spsc::Queue;
-use core::cell::UnsafeCell;
+use core::{cell::UnsafeCell, fmt::Write};
+use heapless::{spsc::Queue, String as HeaplessString};
 use std::sync::Mutex;
 
 // SAFETY: Only accessed via provided API, SPSC (single producer, single consumer)
 pub struct LogQueue {
-    queue: UnsafeCell<Queue<LogEntry, 256>>,
+    queue: UnsafeCell<Queue<LogEntry, 64>>,
 }
 
 unsafe impl Sync for LogQueue {}
@@ -16,13 +16,13 @@ static WEB_LOGS: Mutex<Vec<LogEntry>> = Mutex::new(Vec::new());
 
 #[derive(Debug, Clone)]
 pub struct LogEntry {
-    pub timestamp: String,
-    pub level: String,
-    pub message: String,
+    pub timestamp: HeaplessString<32>,
+    pub level: HeaplessString<16>,
+    pub message: HeaplessString<128>,
 }
 
 impl LogEntry {
-    pub fn new(timestamp: String, level: String, message: String) -> Self {
+    pub fn new(timestamp: HeaplessString<32>, level: HeaplessString<16>, message: HeaplessString<128>) -> Self {
         Self {
             timestamp,
             level,
@@ -68,15 +68,18 @@ pub fn log_from_isr(entry: LogEntry) {
 /// Логирование с поддержкой разных типов
 pub fn log(level: &str, msg: impl AsRef<str>) {
     use std::time::{SystemTime, UNIX_EPOCH};
+
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    let timestamp = format!("{}.{}", now.as_secs(), now.subsec_millis());
-    
-    let entry = LogEntry::new(
-        timestamp,
-        level.to_string(),
-        msg.as_ref().to_string()
-    );
-    
+    let mut timestamp = HeaplessString::<32>::new();
+    let _ = write!(&mut timestamp, "{}.{}", now.as_secs(), now.subsec_millis());
+
+    let mut level_buf = HeaplessString::<16>::new();
+    let _ = level_buf.push_str(level);
+
+    let mut msg_buf = HeaplessString::<128>::new();
+    let _ = msg_buf.push_str(msg.as_ref());
+
+    let entry = LogEntry::new(timestamp, level_buf, msg_buf);
     log_from_isr(entry);
 }
 
@@ -125,12 +128,12 @@ pub fn push_web_log(entry: LogEntry) {
 
 pub fn trim_logs() {
     let mut logs = WEB_LOGS.lock().unwrap();
-    if logs.len() > 256 {
-        let cutoff = logs.len().saturating_sub(256);
+    if logs.len() > 128 {
+        let cutoff = logs.len().saturating_sub(128);
         logs.drain(0..cutoff);
     }
 
-    while LOG_QUEUE.len() > 128 {
+    while LOG_QUEUE.len() > 32 {
         let _ = LOG_QUEUE.pop();
     }
 }

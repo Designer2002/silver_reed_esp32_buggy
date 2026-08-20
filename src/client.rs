@@ -1,5 +1,9 @@
-use std::{ffi::CString, ptr, sync::LazyLock};
-
+use core::{
+    cell::UnsafeCell,
+    fmt::Write,
+};
+use std::{ffi::CString, fmt::Result};
+use heapless::{Vec, spsc::Queue};
 use crate::{
     log_fmt,
     logger::log,
@@ -16,14 +20,48 @@ use esp_idf_sys::{
     esp_http_client_method_t_HTTP_METHOD_GET, esp_http_client_method_t_HTTP_METHOD_POST,
     esp_http_client_open, esp_http_client_read_response, esp_http_client_set_header,
     esp_http_client_set_method, esp_http_client_set_redirection, esp_http_client_set_url,
-    esp_http_client_transport_t_HTTP_TRANSPORT_OVER_TCP, esp_http_client_write,
-    esp_tls_error_handle_t, esp_tls_get_and_clear_last_error, ESP_FAIL, ESP_OK, TICKS_PER_US_ROM,
+    esp_http_client_transport_t_HTTP_TRANSPORT_OVER_TCP, esp_http_client_write, ESP_FAIL, ESP_OK,
 };
-use heapless::mpmc;
 
-// Очередь для полученных данных от сервера.
-// heapless::mpmc::Queue требует размер > 1, поэтому оставляем 2, чтобы не накапливать heap.
-static DATA_QUEUE: LazyLock<mpmc::Queue<Vec<u8>, 2>> = LazyLock::new(|| mpmc::Queue::default());
+pub struct DataQueue {
+    queue: UnsafeCell<Queue<Vec<u8, BUFFER_SIZE>, 64>>,
+}
+unsafe impl Sync for DataQueue {}
+static BUFFER_QUEUE: DataQueue = DataQueue {
+    queue: UnsafeCell::new(Queue::new()),
+};
+
+//data entry can be 
+
+impl DataQueue {
+    /// Push a log entry. If full, drops the oldest log.
+    pub fn push(&self, entry: DataEntry) -> Result {
+        let entry_clone = entry.clone();
+        // SAFETY: Only one producer (main or ISR)
+        let queue = unsafe { &mut *self.queue.get() };
+        if queue.len() >= 128 {
+            let _ = queue.dequeue();
+        }
+        if queue.enqueue(entry).is_err() {
+            queue.dequeue();
+            let _ = queue.enqueue(entry_clone);
+        }
+        Ok(())
+    }
+
+    /// Pop a log entry. Returns None if empty.
+    pub fn pop(&self) -> Option<Vec<u8, BUFFER_SIZE>> {
+        // SAFETY: Only one consumer (server thread)
+        let queue = unsafe { &mut *self.queue.get() };
+        queue.dequeue()
+    }
+
+    /// Get the number of logs in the queue.
+    pub fn len(&self) -> usize {
+        let queue = unsafe { &*self.queue.get() };
+        queue.len()
+    }
+}
 
 // IP сервера - настраивается при инициализации
 static mut SERVER_IP: [u8; 16] = [0u8; 16];
@@ -203,7 +241,7 @@ pub fn cleanup_client(client: *mut esp_http_client) {
 
 pub fn trim_memory() {
     for _ in 0..2 {
-        let _ = DATA_QUEUE.dequeue();
+        let _ = BUFFER_QUEUE.pop();
     }
 
     crate::logger::trim_logs();
@@ -352,18 +390,18 @@ pub fn send_chunk_request(start_row: i32) -> bool {
 
         let mut output_buffer = [0u8; BUFFER_SIZE as usize];
         let data_read =
-            esp_http_client_read_response(temp_client, output_buffer.as_mut_ptr(), BUFFER_SIZE);
+            esp_http_client_read_response(temp_client, output_buffer.as_mut_ptr(), BUFFER_SIZE as i32);
 
         close_client(temp_client);
 
         if data_read >= 0 {
-            let data: Vec<u8> = output_buffer[..data_read as usize].to_vec();
+            output_buffer.truncate(data_read as usize);
 
             for _ in 0..2 {
-                let _ = DATA_QUEUE.dequeue();
+                let _ = BUFFER_QUEUE.pop();
             }
 
-            if DATA_QUEUE.enqueue(data).is_err() {
+            if BUFFER_QUEUE.push(output_buffer).is_err() {
                 log("WARN", "Data queue is full, dropping chunk");
                 return false;
             }
@@ -548,7 +586,7 @@ pub fn check_and_request_chunk() {
 
 /// Получить данные из очереди
 pub fn receive_data() -> Option<Vec<u8>> {
-    DATA_QUEUE.dequeue()
+    BUFFER_QUEUE.pop()
 }
 
 /// Запросить начальный чанк при старте вязания
@@ -620,20 +658,131 @@ pub fn send_ready_flag(row: i32) -> bool {
 /// row: глобальный номер ряда, direction: true = RIGHT, false = LEFT
 /// НЕ использует HTTP — сохраняет в глобальные переменные, client_task отправляет
 pub fn queue_row_info(row: i32, direction: bool) {
-    crate::state::ROW_INFO_PENDING.store(true, core::sync::atomic::Ordering::Relaxed);
     crate::state::ROW_INFO_ROW.store(row, core::sync::atomic::Ordering::Relaxed);
     crate::state::ROW_INFO_DIR.store(direction, core::sync::atomic::Ordering::Relaxed);
+    crate::state::ROW_INFO_PENDING.store(true, core::sync::atomic::Ordering::Release);
+}
+
+/// Собрать все hits для завершённого ряда и отправить одним POST.
+/// ВАЖНО: это task-side drain, а не повторная отправка в ту же очередь.
+/// Мы не возвращаем "чужие" hits обратно в SOLENOID_HITS — это ломает ownership и
+/// создаёт гонки/переполнения на горячем пути.
+pub fn send_row_hits_batch(row: i32, direction: bool) -> bool {
+    use crate::state::{CURRENT_ROW_HITS, SOLENOID_HITS};
+
+    let max_hits = crate::state::row_hit_capacity();
+    let mut row_hits = CURRENT_ROW_HITS.lock().unwrap();
+    row_hits.clear();
+
+    // Drain only the current row. Any hit from another row is dropped at this stage.
+    // We intentionally do not requeue it here: the hot path is single-producer, and
+    // re-enqueueing during the same drain breaks the ownership contract.
+    while let Some(h) = SOLENOID_HITS.recv_front() {
+        if h.row != row || h.direction != direction {
+            continue;
+        }
+
+        if row_hits.len() >= max_hits {
+            log("WARN", "row hits buffer full for completed row; truncating overflow");
+            break;
+        }
+
+        if row_hits.push(h).is_err() {
+            log("WARN", "row hits buffer full, dropping overflow hits for this row");
+            break;
+        }
+    }
+
+    if row_hits.is_empty() {
+        return true;
+    }
+
+    let mut json = heapless::String::<{ crate::state::MAX_ROW_JSON_BYTES }>::new();
+    let _ = write!(
+        json,
+        "{{\"row\":{},\"dir\":\"{}\",\"hits\":[",
+        row,
+        if direction { "right" } else { "left" }
+    );
+
+    for (idx, hit) in row_hits.iter().enumerate() {
+        if idx > 0 {
+            let _ = json.push(',');
+        }
+
+        let _ = write!(
+            json,
+            "{{\"r\":{},\"n\":{},\"f\":{},\"d\":{}}}",
+            hit.row,
+            hit.needle,
+            if hit.actual_fire { 1 } else { 0 },
+            if hit.direction { 1 } else { 0 }
+        );
+    }
+
+    let _ = json.push_str("]}");
+
+    let sent = unsafe {
+        let ip = get_server_ip();
+        let mut url = heapless::String::<64>::new();
+        let _ = core::write!(&mut url, "http://{}:6666/solenoid_hits", ip);
+        let c_url = match CString::new(url.as_str()) {
+            Ok(u) => u,
+            Err(_) => {
+                log("ERROR", "Failed to build solenoid hits URL");
+                return false;
+            }
+        };
+
+        let temp_client = create_client(c_url.as_ptr());
+        if temp_client.is_null() {
+            log("WARN", "Failed to create batched solenoid client");
+            return false;
+        }
+
+        esp_http_client_set_url(temp_client, c_url.as_ptr());
+        esp_http_client_set_method(temp_client, esp_http_client_method_t_HTTP_METHOD_POST);
+        let hdr_name = CString::new("Content-Type").unwrap();
+        let hdr_val = CString::new("application/json").unwrap();
+        esp_http_client_set_header(temp_client, hdr_name.as_ptr(), hdr_val.as_ptr());
+
+        let body_bytes = json.as_bytes();
+        let body_ptr = body_bytes.as_ptr() as *const core::ffi::c_void;
+        let err = esp_http_client_open(temp_client, body_bytes.len() as i32);
+        if err != ESP_OK {
+            log("ERROR", "Failed to open batched solenoid hits client");
+            close_client(temp_client);
+            return false;
+        }
+
+        let written = esp_http_client_write(temp_client, body_ptr as *const u8, body_bytes.len() as i32);
+        if written < 0 {
+            log("ERROR", "Failed to write batched solenoid hits body");
+            close_client(temp_client);
+            return false;
+        }
+
+        let _ = esp_http_client_fetch_headers(temp_client);
+        let mut discard = [0u8; 128];
+        let _ = esp_http_client_read_response(temp_client, discard.as_mut_ptr(), 128);
+        close_client(temp_client);
+        true
+    };
+
+    row_hits.clear();
+    sent
 }
 
 /// Реально отправить queued row_info через HTTP (вызывается из client_task)
 pub fn send_queued_row_info() -> bool {
     let row = crate::state::ROW_INFO_ROW.load(core::sync::atomic::Ordering::Relaxed);
     let direction = crate::state::ROW_INFO_DIR.load(core::sync::atomic::Ordering::Relaxed);
-    unsafe {
+    let row_ok = unsafe {
         let ip = get_server_ip();
         let dir_str = if direction { "right" } else { "left" };
-        let url = format!("http://{}:6666/row_info?row={}&dir={}", ip, row, dir_str);
-        let c_url = match CString::new(url) {
+        let mut url = heapless::String::<96>::new();
+        let _ = core::write!(&mut url, "http://{}:6666/row_info?row={}&dir={}", ip, row, dir_str);
+        let c_url = match CString::new(url.as_str()) {
             Ok(u) => u,
             Err(_) => {
                 log("ERROR", "Failed to create check_restart URL");
@@ -661,7 +810,10 @@ pub fn send_queued_row_info() -> bool {
 
         close_client(temp_client);
         true
-    }
+    };
+
+    let hits_ok = send_row_hits_batch(row, direction);
+    row_ok && hits_ok
 }
 
 pub struct HttpEventContext {
@@ -689,75 +841,7 @@ pub fn create_client(url: *const u8) -> *mut esp_http_client {
     unsafe { esp_http_client_init(&config) }
 }
 
-/// Отправить один solenoid hit на сервер с частотой ~1 ms.
-/// Это избегает большого JSON-пакета и переполнения стека.
+/// Старый hot-path удалён: hits отправляются пачкой per row, а не по одному hit.
 pub fn send_solenoid_hits() -> usize {
-    use crate::state::SOLENOID_HITS;
-
-    let Some(hit) = SOLENOID_HITS.recv_front(TICKS_PER_US_ROM * 1000) else {
-        return 0;
-    };
-
-    let h = hit.0;
-    let mut json = String::with_capacity(96);
-    json.push_str("{\"hits\":[");
-    json.push_str(&format!(
-        "{{\"r\":{},\"n\":{},\"f\":{},\"d\":{}}}",
-        h.row,
-        h.needle,
-        if h.actual_fire { 1 } else { 0 },
-        if h.direction { 1 } else { 0 }
-    ));
-    json.push_str("]}");
-
-    let sent = unsafe {
-        let ip = get_server_ip();
-        let url = format!("http://{}:6666/solenoid_hits", ip);
-        let c_url = match CString::new(url) {
-            Ok(u) => u,
-            Err(_) => {
-                log(
-                    "ERROR",
-                    "Failed to create temporary client for solenoid hits info sending",
-                );
-                return 0;
-            }
-        };
-        let temp_client = create_client(c_url.as_ptr());
-        if temp_client.is_null() {
-            return 0;
-        }
-        let body_bytes = json.as_bytes();
-        esp_http_client_set_url(temp_client, c_url.as_ptr());
-        esp_http_client_set_method(temp_client, esp_http_client_method_t_HTTP_METHOD_POST);
-        let hdr_name = CString::new("Content-Type").unwrap();
-        let hdr_val = CString::new("application/json").unwrap();
-        esp_http_client_set_header(temp_client, hdr_name.as_ptr(), hdr_val.as_ptr());
-
-        let body_ptr = body_bytes.as_ptr() as *const core::ffi::c_void;
-        let err = esp_http_client_open(temp_client, body_bytes.len() as i32);
-        if err != ESP_OK {
-            log("ERROR", "Failed to open esp http client");
-            close_client(temp_client);
-            return 0;
-        }
-
-        let written =
-            esp_http_client_write(temp_client, body_ptr as *const u8, body_bytes.len() as i32);
-        if written < 0 {
-            log("ERROR", "Failed to write solenoid_hits body");
-            close_client(temp_client);
-            return 0;
-        }
-
-        let _ = esp_http_client_fetch_headers(temp_client);
-        let mut discard = [0u8; 128];
-        let _ = esp_http_client_read_response(temp_client, discard.as_mut_ptr(), 128);
-        close_client(temp_client);
-        1
-    };
-
-    json.clear();
-    drop(json);
-    sent
+    0
 }

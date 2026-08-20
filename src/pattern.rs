@@ -54,10 +54,8 @@ pub fn parse_pattern(pattern: &str) -> KnitPattern {
 // Активный PATTERN не меняется до явного swap после завершения текущего ряда.
 pub fn store_next_chunk(new_rows: Vec<Vec<bool>>, start_row: usize, width: usize) {
     let mut next = crate::state::NEXT_CHUNK_ROWS.lock().unwrap();
+    NEXT_CHUNK_START_ROW.store(start_row as i32, std::sync::atomic::Ordering::Release);
     *next = Some(new_rows);
-    drop(next);
-
-    NEXT_CHUNK_START_ROW.store(start_row as i32, std::sync::atomic::Ordering::Relaxed);
     let _ = width;
 }
 
@@ -72,7 +70,7 @@ pub fn swap_to_next_chunk() -> bool {
         return false;
     }
 
-    let start_row = NEXT_CHUNK_START_ROW.load(std::sync::atomic::Ordering::Relaxed);
+    let start_row = NEXT_CHUNK_START_ROW.load(std::sync::atomic::Ordering::Acquire);
     let mut pattern = PATTERN.lock().unwrap();
     pattern.width = width;
     pattern.height = next_rows.len();
