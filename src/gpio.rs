@@ -152,11 +152,11 @@ pub fn on_ccp_tick_fast(_ccp_seq: u32) {
     let inside = INSIDE_PATTERN.load(Ordering::Relaxed);
 
     if inside {
-        let needle = NEEDLE.load(Ordering::Relaxed);
+        let needle: i32;
         if DIR_RIGHT.load(Ordering::Relaxed) {
-            NEEDLE.fetch_add(1, Ordering::Relaxed);
+            needle = NEEDLE.fetch_add(1, Ordering::Relaxed);
         } else {
-            NEEDLE.fetch_sub(1, Ordering::Relaxed);
+            needle = NEEDLE.fetch_sub(1, Ordering::Relaxed);
         }
 
         let rows_in_chunk = ROWS_IN_CURRENT_CHUNK.load(Ordering::Relaxed);

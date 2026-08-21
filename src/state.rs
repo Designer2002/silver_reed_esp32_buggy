@@ -8,7 +8,6 @@ pub static DIR_RIGHT: AtomicBool = AtomicBool::new(true);
 pub static INSIDE_PATTERN: AtomicBool = AtomicBool::new(true);
 pub static KNITTING: AtomicBool = AtomicBool::new(false);
 pub static WIDTH: AtomicUsize = AtomicUsize::new(0);
-pub static HEIGHT: AtomicUsize = AtomicUsize::new(0);
 pub static DOB_LAST_STATE: AtomicBool = AtomicBool::new(true); // по умолчанию HIGH
 pub static CCP_LAST_STATE: AtomicBool = AtomicBool::new(true); // по умолчанию HIGH
 pub static PATTERN_START: AtomicI32 = AtomicI32::new(0);
@@ -65,7 +64,7 @@ pub const HOK: i32 = 19;
 pub const KSL: i32 = 21;
 pub const ND1: i32 = 22;
 
-pub const BUFFER_SIZE: usize = 64 + 1; // Увеличен для поддержки широких узоров
+pub const BUFFER_SIZE: i32 = 2048; // Увеличен для поддержки широких узоров
 pub const MAX_HTTP_OUTPUT_BUFFER: usize = 8192;
 pub const CHUNK_SIZE: usize = 4; // рядов в одном чанке
 pub const MAX_ROW_HITS: usize = 512; // фиксированный лимит hits в одном ряде, чтобы не расти в heap
