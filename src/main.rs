@@ -36,19 +36,16 @@ fn main() -> anyhow::Result<()> {
             sysloop,
         )?;
     web::connect_wifi(&mut wifi)?;
-    client::init_server_ip("192.168.1.101");
     init_pins();
 
     // ✅ Инициализация NVS для сохранения прогресса вязания
     knit_state::init_knit_nvs(nvs_knit);
 
     // ✅ Проверяем есть ли сохранённый прогресс
-    if let Some((global_row, chunk_start, rows_in_chunk)) = knit_state::restore_progress() {
+    if let Some(global_row) = knit_state::restore_progress() {
         // Восстанавливаем состояние
         crate::state::ROW.store(global_row, std::sync::atomic::Ordering::Relaxed);
         crate::state::GLOBAL_ROW.store(global_row, std::sync::atomic::Ordering::Relaxed);
-        crate::state::CURRENT_CHUNK_START_ROW.store(chunk_start, std::sync::atomic::Ordering::Relaxed);
-        crate::state::ROWS_IN_CURRENT_CHUNK.store(rows_in_chunk, std::sync::atomic::Ordering::Relaxed);
         info!("Resuming from saved progress: row={}", global_row);
     } else {
         info!("Starting fresh - no saved progress");
@@ -60,7 +57,6 @@ fn main() -> anyhow::Result<()> {
     init_knitter();
 
     info!("Starting knitting machine with streaming pattern...");
-    info!("Server IP: {}", client::get_server_ip());
 
     // Thread 1: engine (вязание)
     ThreadSpawnConfiguration {
